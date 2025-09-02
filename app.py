@@ -1,0 +1,2885 @@
+import dash
+from dash import dcc, html, Input, Output, callback, dash_table
+import dash_bootstrap_components as dbc
+import plotly.express as px
+import plotly.graph_objects as go
+import pandas as pd
+from sqlalchemy import create_engine, text
+from datetime import datetime, timedelta
+import os
+import numpy as np
+import urllib.parse
+
+# ==================== CONFIGURAÇÕES DE CONEXÃO ====================
+DB_CONFIG = {
+    'server': 'rio01p-sql01',
+    'database': 'ControleTI',
+    'username': 'RM',
+    'password': 'rm',
+    'driver': 'ODBC Driver 17 for SQL Server',
+    'port': '1433'
+}
+
+# ==================== FUNÇÕES DE CONEXÃO ====================
+def get_engine():
+    """Cria engine SQLAlchemy para SQL Server"""
+    try:
+        password_encoded = urllib.parse.quote_plus(DB_CONFIG['password'])
+        username_encoded = urllib.parse.quote_plus(DB_CONFIG['username'])
+        driver_encoded = urllib.parse.quote_plus(DB_CONFIG['driver'])
+        
+        connection_string = f"""mssql+pyodbc://{username_encoded}:{password_encoded}@{DB_CONFIG['server']}:{DB_CONFIG['port']}/{DB_CONFIG['database']}?driver={driver_encoded}"""
+        
+        engine = create_engine(connection_string)
+        return engine
+    except Exception as e:
+        print(f"Erro na criação da engine: {e}")
+        return None
+
+def execute_query(query):
+    """Executa query e retorna DataFrame usando SQLAlchemy"""
+    engine = get_engine()
+    if engine:
+        try:
+            with engine.connect() as connection:
+                df = pd.read_sql(text(query), connection)
+            return df
+        except Exception as e:
+            print(f"Erro na query: {e}")
+            print(f"Query executada: {query}")
+            return pd.DataFrame()
+    return pd.DataFrame()
+
+QUERIES = {
+    # Terceirizados inativos com equipamentos
+    'terceirizados_inativos_com_equipamentos': """
+        SELECT 
+            C.Serial, 
+            C.Modelo, 
+            C.Matricula AS Matricula_Comp,        
+            T.Nome, 
+            T.Matricula AS Matricula_Terc, 
+            T.Chefia 
+        FROM Computadores C 
+        JOIN Terceirizados T ON C.Matricula = T.Matricula 
+        WHERE T.Situacao = 0
+    """,
+    
+    # Terceirizados ativos com equipamentos
+    'terceirizados_ativos_com_equipamentos': """
+        SELECT 
+            C.Serial, 
+            C.Modelo, 
+            C.Matricula AS Matricula_Comp,        
+            T.Nome, 
+            T.Matricula AS Matricula_Terc, 
+            T.Chefia 
+        FROM Computadores C 
+        JOIN Terceirizados T ON C.Matricula = T.Matricula 
+        WHERE T.Situacao = 1
+    """,
+    
+    # Colaboradores demitidos
+    'colaboradores_demitidos': """
+        SELECT Colaboradores.Nome 
+        FROM Colaboradores  
+        WHERE Colaboradores.Situacao = 'Demitido'
+    """,
+    
+    # Colaboradores aviso prévio
+    'colaboradores_aviso_previo': """
+        SELECT Colaboradores.Nome 
+        FROM Colaboradores  
+        WHERE Colaboradores.Situacao = 'Aviso Prévio'
+    """,
+    
+    # Colaboradores demitidos com equipamentos
+    'colaboradores_demitidos_com_equipamentos': """
+        SELECT     
+            c.Nome AS Colaborador,     
+            c.CCusto,     
+            c.Chefia,     
+            comp.Modelo AS ModeloComputador,     
+            p.Modelo AS ModeloPeriferico 
+        FROM Colaboradores c 
+        LEFT JOIN Computadores comp ON comp.Matricula = c.Matricula 
+        LEFT JOIN Perifericos p ON p.Matricula = c.Matricula 
+        WHERE c.Situacao = 'Demitido'     
+            AND c.Nome IS NOT NULL     
+            AND comp.Modelo IS NOT NULL     
+            AND (comp.ID IS NOT NULL OR p.ID IS NOT NULL)
+    """,
+    
+    # Total em estoque
+    'total_equipamentos_estoque': """
+        SELECT SUM(Quantidade) AS TotalEmEstoque 
+        FROM (     
+            SELECT Modelo, COUNT(*) AS Quantidade     
+            FROM Computadores     
+            WHERE Usuario LIKE '%estoque%'     
+            GROUP BY Modelo 
+        ) AS Subconsulta
+    """,
+    
+    # Modelos em estoque
+    'modelos_em_estoque': """
+        SELECT 
+            Modelo, 
+            COUNT(*) AS Quantidade
+        FROM Computadores
+        WHERE Usuario LIKE '%estoque%'
+        GROUP BY Modelo
+        ORDER BY Quantidade DESC
+    """,
+    
+    # Colaboradores ativos com equipamentos
+    'colaboradores_ativos_com_equipamentos': """
+        SELECT 
+            Computadores.Serial, 
+            Computadores.Modelo, 
+            Computadores.Matricula, 
+            Colaboradores.Nome 
+        FROM Computadores 
+        LEFT JOIN Colaboradores ON Computadores.Matricula = Colaboradores.Matricula
+        WHERE Computadores.Matricula IS NOT NULL
+            AND Colaboradores.Nome IS NOT NULL
+    """,
+    
+    # KPIs de contagem
+    'kpi_terceirizados_inativos': """
+        SELECT COUNT(*) as total_terceirizados_inativos
+        FROM Computadores C 
+        JOIN Terceirizados T ON C.Matricula = T.Matricula 
+        WHERE T.Situacao = 0
+    """,
+    
+    'kpi_terceirizados_ativos': """
+        SELECT COUNT(*) as total_terceirizados_ativos
+        FROM Computadores C 
+        JOIN Terceirizados T ON C.Matricula = T.Matricula 
+        WHERE T.Situacao = 1
+    """,
+    
+    'kpi_colaboradores_demitidos': """
+        SELECT COUNT(*) as total_colaboradores_demitidos
+        FROM Colaboradores  
+        WHERE Situacao = 'Demitido'
+    """,
+    
+    'kpi_colaboradores_aviso_previo': """
+        SELECT COUNT(*) as total_colaboradores_aviso_previo
+        FROM Colaboradores  
+        WHERE Situacao = 'Aviso Prévio'
+    """,
+    
+    'kpi_colaboradores_ativos': """
+        SELECT COUNT(*) as total_colaboradores_ativos
+        FROM Colaboradores  
+        WHERE Situacao = 'Ativo'
+    """,
+    
+    'lista_computadores': """
+        SELECT Serial
+        FROM Computadores
+        WHERE Serial IS NOT NULL
+    """,
+    
+    # Equipamentos alocados (não estoque, com matrícula)
+    'kpi_equipamentos_alocados': """
+        SELECT COUNT(*) as total_equipamentos_alocados
+        FROM Computadores
+        WHERE Matricula IS NOT NULL
+          AND (Usuario IS NULL OR Usuario NOT LIKE '%estoque%')
+    """,
+    
+    'kpi_equipamentos_sem_dono': """
+        SELECT COUNT(*) as total_equipamentos_sem_dono
+        FROM Computadores
+        WHERE Matricula IS NULL
+          AND (Usuario IS NULL OR Usuario NOT LIKE '%estoque%')
+    """,
+    
+    'kpi_colaboradores_ativos_sem_computador': """
+        SELECT COUNT(*) as total_colaboradores_ativos_sem_computador
+        FROM Colaboradores c
+        LEFT JOIN Computadores comp ON comp.Matricula = c.Matricula
+        WHERE c.Situacao = 'Ativo'
+          AND comp.Matricula IS NULL
+    """,
+    
+    'kpi_demitidos_com_equipamentos': """
+        SELECT COUNT(DISTINCT c.Matricula) as total_demitidos_com_equipamentos
+        FROM Colaboradores c 
+        LEFT JOIN Computadores comp ON comp.Matricula = c.Matricula 
+        LEFT JOIN Perifericos p ON p.Matricula = c.Matricula 
+        WHERE c.Situacao = 'Demitido'     
+            AND c.Nome IS NOT NULL     
+            AND comp.Modelo IS NOT NULL     
+            AND (comp.ID IS NOT NULL OR p.ID IS NOT NULL)
+    """,
+    
+    'kpi_colaboradores_ativos_com_equipamentos': """
+        SELECT COUNT(*) as total_colaboradores_ativos_com_equipamentos
+        FROM Computadores 
+        LEFT JOIN Colaboradores ON Computadores.Matricula = Colaboradores.Matricula
+        WHERE Computadores.Matricula IS NOT NULL
+            AND Colaboradores.Nome IS NOT NULL
+    """,
+    
+    # Consultas adicionais básicas
+    'total_computadores': """
+        SELECT COUNT(*) as total_computadores
+        FROM Computadores
+    """,
+    
+    'computadores_por_modelo': """
+        SELECT 
+            Modelo,
+            COUNT(*) as quantidade
+        FROM Computadores
+        WHERE Modelo IS NOT NULL
+        GROUP BY Modelo
+        ORDER BY quantidade DESC
+    """,
+    
+    'usuarios_por_setor': """
+        SELECT 
+            COALESCE(c.CCusto, 'Sem Setor') as Setor,
+            COUNT(*) as quantidade
+        FROM Colaboradores c
+        WHERE c.Situacao NOT IN ('Demitido', 'Aviso Prévio')
+        GROUP BY c.CCusto
+        ORDER BY quantidade DESC
+    """,
+    
+    'ocupacao_por_setor': """
+        SELECT 
+            COALESCE(c.CCusto, 'Sem Setor') as Setor,
+            COUNT(DISTINCT c.Matricula) as TotalColaboradores,
+            COUNT(DISTINCT CASE WHEN comp.Matricula IS NOT NULL THEN c.Matricula END) as ComEquipamento,
+            CASE 
+                WHEN COUNT(DISTINCT c.Matricula) > 0 
+                THEN ROUND(
+                    (COUNT(DISTINCT CASE WHEN comp.Matricula IS NOT NULL THEN c.Matricula END) * 100.0) / 
+                    COUNT(DISTINCT c.Matricula), 1
+                )
+                ELSE 0 
+            END as TaxaOcupacao
+        FROM Colaboradores c
+        LEFT JOIN Computadores comp ON comp.Matricula = c.Matricula
+        WHERE c.Situacao = 'Ativo'
+        GROUP BY c.CCusto
+        HAVING COUNT(DISTINCT c.Matricula) > 0
+        ORDER BY TaxaOcupacao DESC
+    """,
+    
+    'colaboradores_por_chefia': """
+        SELECT 
+            COALESCE(c.Chefia, 'Sem Chefia') as Chefia,
+            COUNT(*) as quantidade
+        FROM Colaboradores c
+        WHERE c.Situacao = 'Ativo'
+        GROUP BY c.Chefia
+        ORDER BY quantidade DESC
+    """,
+    
+    'colaboradores_detalhado': """
+        SELECT 
+            c.Nome,
+            c.Matricula,
+            COALESCE(c.CCusto, 'Sem Setor') as Setor,
+            COALESCE(c.Chefia, 'Sem Chefia') as Chefia,
+            c.Situacao,
+            CASE 
+                WHEN comp.Serial IS NOT NULL THEN 'Com Equipamento'
+                ELSE 'Sem Equipamento'
+            END as StatusEquipamento,
+            comp.Modelo as ModeloComputador
+        FROM Colaboradores c
+        LEFT JOIN Computadores comp ON comp.Matricula = c.Matricula
+        WHERE c.Situacao = 'Ativo'
+        ORDER BY c.Nome
+    """,
+    
+    'equipamentos_detalhado': """
+        SELECT 
+            c.Serial,
+            c.Modelo,
+            COALESCE(c.Usuario, 'Sem Usuário') as Usuario,
+            COALESCE(c.Matricula, 'Sem Matrícula') as Matricula,
+            COALESCE(col.Nome, 'Não Alocado') as NomeColaborador,
+            CASE 
+                WHEN c.Usuario LIKE '%estoque%' THEN 'Estoque'
+                WHEN c.Matricula IS NOT NULL THEN 'Alocado'
+                ELSE 'Não Controlado'
+            END as Status
+        FROM Computadores c
+        LEFT JOIN Colaboradores col ON col.Matricula = c.Matricula
+        ORDER BY c.Modelo, c.Serial
+    """,
+    
+    'equipamentos_por_status': """
+        SELECT 
+            CASE 
+                WHEN c.Usuario LIKE '%estoque%' THEN 'Estoque'
+                WHEN c.Matricula IS NOT NULL THEN 'Alocado'
+                ELSE 'Sem Dono'
+            END as Status,
+            COUNT(*) as quantidade
+        FROM Computadores c
+        GROUP BY 
+            CASE 
+                WHEN c.Usuario LIKE '%estoque%' THEN 'Estoque'
+                WHEN c.Matricula IS NOT NULL THEN 'Alocado'
+                ELSE 'Sem Dono'
+            END
+        ORDER BY quantidade DESC
+    """,
+    
+    'equipamentos_por_status': """
+        SELECT 
+            CASE 
+                WHEN c.Usuario LIKE '%estoque%' THEN 'Estoque'
+                WHEN c.Matricula IS NOT NULL THEN 'Alocado'
+                ELSE 'Não Controlado'
+            END as Status,
+            COUNT(*) as quantidade
+        FROM Computadores c
+        GROUP BY 
+            CASE 
+                WHEN c.Usuario LIKE '%estoque%' THEN 'Estoque'
+                WHEN c.Matricula IS NOT NULL THEN 'Alocado'
+                ELSE 'Não Controlado'
+            END
+        ORDER BY quantidade DESC
+    """,
+    
+    'equipamentos_criticidade': """
+        SELECT 
+            c.Serial,
+            c.Modelo,
+            COALESCE(c.Usuario, 'Sem Usuário') as Usuario,
+            COALESCE(c.Matricula, 'Sem Matrícula') as Matricula,
+            COALESCE(col.Nome, 'Não Alocado') as NomeColaborador,
+            CASE 
+                WHEN c.Usuario LIKE '%estoque%' THEN 'Estoque'
+                WHEN c.Matricula IS NOT NULL THEN 'Alocado'
+                ELSE 'Não Controlado'
+            END as Status
+        FROM Computadores c
+        LEFT JOIN Colaboradores col ON col.Matricula = c.Matricula
+        WHERE c.Serial IS NOT NULL
+        ORDER BY c.Modelo, c.Serial
+    """
+}
+
+# ==================== FUNÇÕES DE REDUÇÃO DE CUSTOS ====================
+def load_desligamento_data():
+    """Carrega e processa os dados do Excel para redução de custos"""
+    try:
+        # Lê o arquivo Excel
+        df = pd.read_excel('desligamento.xlsx')
+        
+        # Remove linhas que são totais ou vazias
+        df = df.dropna(subset=['CT'])
+        df = df[~df['CT'].astype(str).str.contains('Total', na=False)]
+        df = df[df['CT'] != 'CT']  # Remove cabeçalhos duplicados
+        
+        # Converte CT para numérico para filtrar valores válidos
+        df['CT'] = pd.to_numeric(df['CT'], errors='coerce')
+        df = df.dropna(subset=['CT'])
+        
+        # Converte colunas monetárias
+        for col in ['Valor Economizado/mês', 'Valor Economizado/ano']:
+            if col in df.columns:
+                # Remove formatação monetária e converte para float
+                df[col] = df[col].astype(str).str.replace('R$', '').str.replace('.', '').str.replace(',', '.').str.strip()
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+        
+        # Se não existe coluna anual, calcula baseado na mensal
+        if 'Valor Economizado/ano' not in df.columns or df['Valor Economizado/ano'].sum() == 0:
+            df['Valor Economizado/ano'] = df['Valor Economizado/mês'] * 12
+        
+        return df
+        
+    except FileNotFoundError:
+        print("Arquivo 'desligamento.xlsx' não encontrado na raiz do projeto!")
+        # Retorna dados fictícios para teste
+        return pd.DataFrame({
+            'CT': [1, 2, 3, 4, 5],
+            'Devolução': ['Notebook', 'Monitor', 'Impressora', 'Notebook', 'Monitor'],
+            'Valor Economizado/mês': [1000, 500, 300, 1200, 450],
+            'Valor Economizado/ano': [12000, 6000, 3600, 14400, 5400],
+            'Situação': ['Devolvido em 01/01/2024', 'Aguardando', 'Devolvido em 15/01/2024', 'Aguardando', 'Aguardando']
+        })
+    except Exception as e:
+        print(f"Erro ao carregar dados: {str(e)}")
+        return None
+
+def extract_date_from_situation(situation):
+    """Extrai data da coluna situação"""
+    if pd.isna(situation) or 'Aguardando' in str(situation):
+        return None
+    
+    try:
+        # Procura por data no formato dd/mm/yyyy
+        import re
+        date_pattern = r'(\d{2}/\d{2}/\d{4})'
+        match = re.search(date_pattern, str(situation))
+        if match:
+            return pd.to_datetime(match.group(1), format='%d/%m/%Y')
+    except:
+        pass
+    return None
+
+def format_currency(value):
+    """Formata valor como moeda brasileira"""
+    return f"R$ {value:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
+
+# Valor fixo atual
+VALOR_FIXO_MENSAL = 102359.03
+VALOR_FIXO_ANUAL = VALOR_FIXO_MENSAL * 12
+
+# ==================== INICIALIZAÇÃO DA APP ====================
+app = dash.Dash(__name__, 
+                external_stylesheets=[dbc.themes.BOOTSTRAP],
+                suppress_callback_exceptions=True)
+
+app.index_string = '''
+<!DOCTYPE html>
+<html>
+    <head>
+        {%metas%}
+        <title>{%title%}</title>
+        {%favicon%}
+        {%css%}
+        <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+        <style>
+            * {
+              margin: 0;
+              padding: 0;
+              box-sizing: border-box;
+            }
+            
+            body {
+              font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, 'Helvetica Neue', Arial, sans-serif;
+              background: #f8f9fa;
+              color: #1e1e1e;
+              line-height: 1.6;
+              overflow-x: hidden;
+            }
+            
+            .dashboard-container {
+              display: flex;
+              min-height: 100vh;
+            }
+            
+            .sidebar {
+              width: 260px;
+              background: linear-gradient(180deg, #1e1e1e 0%, #0f0f0f 100%);
+              color: white;
+              position: fixed;
+              height: 100vh;
+              left: 0;
+              top: 0;
+              z-index: 1000;
+              box-shadow: 4px 0 20px rgba(0,0,0,0.2);
+              border-right: 2px solid #333;
+            }
+            
+            .sidebar-header {
+              padding: 2.5rem 1.5rem 1.5rem 1.5rem;
+              border-bottom: 2px solid #333;
+              text-align: center;
+              background: linear-gradient(135deg, #ff6b6b 0%, #4ecdc4 100%);
+              -webkit-background-clip: text;
+              background-clip: text;
+            }
+            
+            .sidebar-header h1 {
+              font-size: 1.75rem;
+              font-weight: 900;
+              margin-bottom: 0.5rem;
+              color: white;
+              text-shadow: 0 2px 4px rgba(0,0,0,0.3);
+              letter-spacing: -0.5px;
+            }
+            
+            .sidebar-header p {
+              color: #ccc;
+              font-size: 0.9rem;
+              font-weight: 400;
+            }
+            
+            .sidebar-nav {
+              padding: 2rem 0;
+            }
+            
+            .nav-item {
+              display: flex;
+              align-items: center;
+              padding: 1.25rem 1.5rem;
+              color: #bbb;
+              transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+              border-left: 4px solid transparent;
+              cursor: pointer;
+              position: relative;
+            }
+            
+            .nav-item:hover, .nav-item.active {
+              background: linear-gradient(90deg, rgba(255,255,255,0.1) 0%, transparent 100%);
+              color: white;
+              border-left-color: #00d4aa;
+              transform: translateX(5px);
+            }
+            
+            .nav-item:hover {
+              cursor: pointer;
+            }
+            
+            .nav-item i {
+              margin-right: 1rem;
+              width: 20px;
+              text-align: center;
+              font-size: 1.1rem;
+            }
+            
+            .main-content {
+              margin-left: 260px;
+              padding: 2.5rem;
+              width: calc(100% - 260px);
+              min-height: 100vh;
+              background: #f8f9fa;
+            }
+            
+            .kpi-grid {
+              display: flex !important;
+              flex-wrap: wrap !important;
+              gap: 1.5rem !important;
+              margin-bottom: 3rem !important;
+              width: 100% !important;
+              flex-direction: row !important;
+            }
+            
+            .kpi-card {
+              background: white;
+              border-radius: 12px;
+              padding: 1.5rem;
+              box-shadow: 0 8px 25px rgba(0,0,0,0.08);
+              border: 1px solid #e9ecef;
+              position: relative;
+              transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+              overflow: hidden;
+              flex: 1 1 280px !important;
+              min-width: 280px !important;
+              max-width: 320px !important;
+              display: inline-block !important;
+            }
+            
+            .kpi-card:hover {
+              transform: translateY(-2px);
+              box-shadow: 0 12px 35px rgba(0,0,0,0.12);
+            }
+            
+            .kpi-card::before {
+              content: '';
+              position: absolute;
+              top: 0;
+              left: 0;
+              right: 0;
+              height: 5px;
+              background: linear-gradient(90deg, #ff6b6b 0%, #4ecdc4 50%, #45b7d1 100%);
+            }
+            
+            .kpi-card::after {
+              content: '';
+              position: absolute;
+              top: -50%;
+              right: -50%;
+              width: 100px;
+              height: 100px;
+              background: linear-gradient(45deg, rgba(255,107,107,0.1) 0%, rgba(78,205,196,0.1) 100%);
+              border-radius: 50%;
+              z-index: 0;
+            }
+            
+            .kpi-value {
+              font-size: 2.2rem;
+              font-weight: 900;
+              color: #1e1e1e;
+              margin-bottom: 0.5rem;
+              position: relative;
+              z-index: 1;
+              letter-spacing: -1px;
+              line-height: 1;
+            }
+            
+            .kpi-label {
+              color: #6c757d;
+              font-size: 0.85rem;
+              font-weight: 600;
+              position: relative;
+              z-index: 1;
+              text-transform: uppercase;
+              letter-spacing: 0.5px;
+              line-height: 1.2;
+            }
+            
+            .chart-card {
+              background: white;
+              border-radius: 16px;
+              padding: 2.5rem;
+              box-shadow: 0 8px 25px rgba(0,0,0,0.08);
+              border: 1px solid #e9ecef;
+              margin-bottom: 2.5rem;
+              transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            }
+            
+            .chart-card:hover {
+              box-shadow: 0 12px 35px rgba(0,0,0,0.12);
+            }
+            
+            .header {
+              background: white;
+              border-radius: 16px;
+              padding: 2rem 2.5rem;
+              margin-bottom: 2.5rem;
+              box-shadow: 0 8px 25px rgba(0,0,0,0.08);
+              border: 1px solid #e9ecef;
+              position: relative;
+              overflow: hidden;
+            }
+            
+            .header::before {
+              content: '';
+              position: absolute;
+              top: 0;
+              left: 0;
+              right: 0;
+              bottom: 0;
+              background: linear-gradient(135deg, rgba(255,107,107,0.02) 0%, rgba(78,205,196,0.02) 100%);
+              z-index: 0;
+            }
+            
+            .header-content {
+              display: flex;
+              justify-content: space-between;
+              align-items: center;
+              position: relative;
+              z-index: 1;
+            }
+            
+            .header-title h1 {
+              font-size: 2.25rem;
+              font-weight: 900;
+              color: #1e1e1e;
+              margin-bottom: 0.5rem;
+              letter-spacing: -0.5px;
+            }
+            
+            .header-title p {
+              color: #6c757d;
+              font-size: 1.1rem;
+              font-weight: 500;
+            }
+            
+            .header-actions {
+              display: flex;
+              gap: 1.5rem;
+              align-items: center;
+            }
+            
+            .time-badge {
+              background: linear-gradient(135deg, #1e1e1e 0%, #333 100%);
+              color: white;
+              padding: 0.75rem 1.5rem;
+              border-radius: 8px;
+              font-weight: 600;
+              font-size: 0.9rem;
+              box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+              letter-spacing: 0.5px;
+            }
+            
+            .refresh-btn {
+              background: linear-gradient(135deg, #6c757d 0%, #495057 100%);
+              color: white;
+              border: none;
+              padding: 0.75rem 1.5rem;
+              border-radius: 8px;
+              cursor: pointer;
+              transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+              font-weight: 600;
+              box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+              letter-spacing: 0.5px;
+            }
+            
+            .refresh-btn:hover {
+              background: linear-gradient(135deg, #1e1e1e 0%, #000 100%);
+              transform: translateY(-2px);
+              box-shadow: 0 8px 25px rgba(0,0,0,0.3);
+            }
+            
+            .refresh-btn i {
+              margin-right: 0.5rem;
+            }
+        </style>
+    </head>
+    <body>
+        {%app_entry%}
+        <footer>
+            {%config%}
+            {%scripts%}
+            {%renderer%}
+        </footer>
+    </body>
+</html>
+'''
+
+# ==================== LAYOUT FUNCTIONS ====================
+def create_sidebar():
+    return html.Div([
+        html.Div([
+            html.H1("Portal TI", className="mb-3"),
+            html.P("Dashboard Analytics", style={'opacity': '0.8', 'font-size': '0.9rem'})
+        ], className="sidebar-header"),
+        
+        html.Div([
+            html.Div([
+                html.I(className="fas fa-chart-line"),
+                "Analytics Dashboard"
+            ], className="nav-item", id="nav-dashboard"),
+            
+            html.Div([
+                html.I(className="fas fa-desktop"),
+                "Equipamentos"
+            ], className="nav-item", id="nav-equipamentos"),
+            
+            html.Div([
+                html.I(className="fas fa-users"),
+                "Colaboradores"
+            ], className="nav-item", id="nav-colaboradores"),
+            
+            html.Div([
+                html.I(className="fas fa-dollar-sign"),
+                "Redução de Custos"
+            ], className="nav-item", id="nav-reducao-custos"),
+            
+            html.Div([
+                html.I(className="fas fa-cog"),
+                "Configurações"
+            ], className="nav-item", id="nav-config")
+        ], className="sidebar-nav", id="sidebar-nav-container")
+    ], className="sidebar")
+
+def create_kpi_card(title, value, icon_class, subtitle=None):
+    return html.Div([
+        html.Div([
+            html.Div([
+                html.I(className=icon_class, style={
+                    'fontSize': '2rem',
+                    'color': '#6c757d',
+                    'marginBottom': '1rem'
+                })
+            ], style={'textAlign': 'right'}),
+        ], className="kpi-header"),
+        html.Div(str(value), className="kpi-value"),
+        html.Div(title, className="kpi-label"),
+        html.Div(subtitle if subtitle else "", style={
+            'color': '#adb5bd', 
+            'font-size': '0.85rem', 
+            'margin-top': '0.75rem',
+            'font-weight': '500'
+        })
+    ], className="kpi-card")
+
+def create_colaboradores_content():
+    return html.Div([
+        html.Div([
+            html.Div([
+                html.Div([
+                    html.H1("Gestão de Colaboradores"),
+                    html.P("Análise detalhada da equipe e distribuição organizacional")
+                ], className="header-title"),
+                html.Div([
+                    html.Span(id="current-time-colab", className="time-badge"),
+                    html.Button([
+                        html.I(className="fas fa-sync-alt mr-2"),
+                        "Atualizar Dados"
+                    ], className="refresh-btn", id="refresh-btn-colab")
+                ], className="header-actions")
+            ], className="header-content")
+        ], className="header"),
+        
+        html.Div([
+            html.Div([
+                dcc.Graph(id="colaboradores-por-setor")
+            ], className="chart-card", style={'width': '48%', 'display': 'inline-block', 'marginRight': '2%'}),
+            
+            html.Div([
+                dcc.Graph(id="colaboradores-por-chefia")
+            ], className="chart-card", style={'width': '48%', 'display': 'inline-block', 'marginLeft': '2%'})
+        ], style={'marginBottom': '2rem'}),
+        
+        html.Div([
+            html.Div([
+                html.H4("👥 Lista Completa de Colaboradores Ativos", style={
+                    'margin-bottom': '1.5rem',
+                    'color': '#1e1e1e',
+                    'fontWeight': '600',
+                    'fontSize': '1.1rem'
+                }),
+                html.Div(id="colaboradores-detalhado-table", style={
+                    'maxHeight': '600px', 
+                    'overflowY': 'auto',
+                    'border': '1px solid #e9ecef',
+                    'borderRadius': '8px'
+                })
+            ], className="chart-card")
+        ]),
+        
+        dcc.Interval(
+            id='interval-colaboradores',
+            interval=300*1000,
+            n_intervals=0
+        )
+    ])
+
+def create_equipamentos_content():
+    return html.Div([
+        html.Div([
+            html.Div([
+                html.Div([
+                    html.H1("Gestão de Equipamentos"),
+                    html.P("Controle completo do inventário de TI")
+                ], className="header-title"),
+                html.Div([
+                    html.Span(id="current-time-equip", className="time-badge"),
+                    html.Button([
+                        html.I(className="fas fa-sync-alt mr-2"),
+                        "Atualizar Dados"
+                    ], className="refresh-btn", id="refresh-btn-equip")
+                ], className="header-actions")
+            ], className="header-content")
+        ], className="header"),
+        
+        html.Div([
+            html.Div([
+                dcc.Graph(id="equipamentos-por-status")
+            ], className="chart-card", style={'width': '48%', 'display': 'inline-block', 'marginRight': '2%'}),
+            
+            html.Div([
+                dcc.Graph(id="equipamentos-criticidade")
+            ], className="chart-card", style={'width': '48%', 'display': 'inline-block', 'marginLeft': '2%'})
+        ], style={'marginBottom': '2rem'}),
+        
+        html.Div([
+            html.Div([
+                dcc.Graph(id="equipamentos-por-modelo-full")
+            ], className="chart-card", style={'width': '100%'})
+        ], style={'marginBottom': '2rem'}),
+        
+        html.Div([
+            html.H3("📋 Análise Detalhada", style={
+                'color': '#1e1e1e', 
+                'marginBottom': '1rem', 
+                'fontWeight': '800',
+                'fontSize': '1.5rem'
+            })
+        ]),
+        
+        html.Div([
+            html.Div([
+                html.H4("🚨 Equipamentos Críticos por Idade", style={
+                    'margin-bottom': '1.5rem',
+                    'color': '#1e1e1e',
+                    'fontWeight': '600',
+                    'fontSize': '1.1rem'
+                }),
+                html.Div(id="equipamentos-criticos-table", style={
+                    'maxHeight': '400px', 
+                    'overflowY': 'auto',
+                    'border': '1px solid #e9ecef',
+                    'borderRadius': '8px'
+                })
+            ], className="chart-card", style={'width': '100%', 'marginBottom': '2rem'})
+        ]),
+        
+        html.Div([
+            html.Div([
+                html.H4("💻 Inventário Completo de Equipamentos", style={
+                    'margin-bottom': '1.5rem',
+                    'color': '#1e1e1e',
+                    'fontWeight': '600',
+                    'fontSize': '1.1rem'
+                }),
+                html.Div(id="equipamentos-detalhado-table", style={
+                    'maxHeight': '600px', 
+                    'overflowY': 'auto',
+                    'border': '1px solid #e9ecef',
+                    'borderRadius': '8px'
+                })
+            ], className="chart-card")
+        ]),
+        
+        dcc.Interval(
+            id='interval-equipamentos',
+            interval=300*1000,
+            n_intervals=0
+        )
+    ])
+
+def create_config_content():
+    return html.Div([
+        html.Div([
+            html.Div([
+                html.Div([
+                    html.H1("Configurações do Sistema"),
+                    html.P("Configurações e informações do dashboard")
+                ], className="header-title"),
+            ], className="header-content")
+        ], className="header"),
+        
+        html.Div([
+            html.Div([
+                html.H4("⚙️ Configurações de Conexão", style={
+                    'margin-bottom': '1.5rem',
+                    'color': '#1e1e1e',
+                    'fontWeight': '600'
+                }),
+                html.P(f"Servidor: {DB_CONFIG['server']}", style={'marginBottom': '0.5rem'}),
+                html.P(f"Banco: {DB_CONFIG['database']}", style={'marginBottom': '0.5rem'}),
+                html.P(f"Usuário: {DB_CONFIG['username']}", style={'marginBottom': '0.5rem'}),
+                html.P(f"Driver: {DB_CONFIG['driver']}", style={'marginBottom': '1rem'}),
+                html.Button([
+                    html.I(className="fas fa-database mr-2"),
+                    "Testar Conexão"
+                ], className="refresh-btn", id="test-connection-btn")
+            ], className="chart-card", style={'width': '48%', 'display': 'inline-block', 'marginRight': '2%'}),
+            
+            html.Div([
+                html.H4("📊 Informações do Dashboard", style={
+                    'margin-bottom': '1.5rem',
+                    'color': '#1e1e1e',
+                    'fontWeight': '600'
+                }),
+                html.P("Versão: 2.0", style={'marginBottom': '0.5rem'}),
+                html.P("Última atualização: Setembro 2025", style={'marginBottom': '0.5rem'}),
+                html.P("Atualização automática: 5 minutos", style={'marginBottom': '0.5rem'}),
+                html.P("Desenvolvido com: Python Dash + Plotly", style={'marginBottom': '1rem'}),
+                html.Div(id="connection-status", style={'marginTop': '1rem'})
+            ], className="chart-card", style={'width': '48%', 'display': 'inline-block', 'marginLeft': '2%'})
+        ])
+    ])
+
+def create_reducao_custos_content():
+    """Cria conteúdo da aba de Redução de Custos"""
+    # Carrega dados de desligamento
+    df = load_desligamento_data()
+    
+    if df is None:
+        return html.Div([
+            html.H1("Erro no Sistema", style={'color': '#000', 'text-align': 'center', 'margin-top': '2rem'}),
+            html.P("Não foi possível carregar os dados. Verifique o arquivo desligamento.xlsx.", 
+                   style={'text-align': 'center', 'color': '#666'})
+        ])
+    
+    # Adiciona colunas calculadas
+    df['Data_Devolucao'] = df['Situação'].apply(extract_date_from_situation)
+    df['Status'] = df['Situação'].apply(lambda x: 'Devolvido' if 'Devolvido' in str(x) else 'Aguardando')
+    
+    # Cálculos dos KPIs
+    total_economia_mensal = df['Valor Economizado/mês'].sum()
+    total_economia_anual = df['Valor Economizado/ano'].sum()
+    
+    economia_devolvidos_mensal = df[df['Status'] == 'Devolvido']['Valor Economizado/mês'].sum()
+    economia_devolvidos_anual = df[df['Status'] == 'Devolvido']['Valor Economizado/ano'].sum()
+    
+    economia_pendente_mensal = df[df['Status'] == 'Aguardando']['Valor Economizado/mês'].sum()
+    economia_pendente_anual = df[df['Status'] == 'Aguardando']['Valor Economizado/ano'].sum()
+    
+    qtd_devolvidos = len(df[df['Status'] == 'Devolvido'])
+    qtd_aguardando = len(df[df['Status'] == 'Aguardando'])
+    
+    custo_atual_mensal = VALOR_FIXO_MENSAL - economia_devolvidos_mensal
+    reducao_percentual = (economia_devolvidos_mensal / VALOR_FIXO_MENSAL) * 100 if VALOR_FIXO_MENSAL > 0 else 0
+    
+    return html.Div([
+        # Header
+        html.Div([
+            html.Div([
+                html.Div([
+                    html.H1("Redução de Custos"),
+                    html.P("Monitoramento da economia com desligamentos e devoluções de equipamentos")
+                ], className="header-title"),
+                html.Div([
+                    html.Span(id="current-time-reducao", className="time-badge"),
+                    html.Button([
+                        html.I(className="fas fa-sync-alt mr-2"),
+                        "Atualizar Dados"
+                    ], className="refresh-btn", id="refresh-btn-reducao")
+                ], className="header-actions")
+            ], className="header-content")
+        ], className="header"),
+        
+        # KPIs Grid
+        html.Div([
+            create_kpi_card(
+                "Economia Total Potencial/Mês", 
+                format_currency(total_economia_mensal),
+                "fas fa-chart-line",
+                f"Anual: {format_currency(total_economia_anual)}"
+            ),
+            create_kpi_card(
+                "Economia Realizada/Mês", 
+                format_currency(economia_devolvidos_mensal),
+                "fas fa-check-circle",
+                f"{qtd_devolvidos} itens - {reducao_percentual:.1f}%"
+            ),
+            create_kpi_card(
+                "Economia Pendente/Mês", 
+                format_currency(economia_pendente_mensal),
+                "fas fa-clock",
+                f"{qtd_aguardando} itens aguardando"
+            ),
+            create_kpi_card(
+                "Custo Atual/Mês", 
+                format_currency(custo_atual_mensal),
+                "fas fa-dollar-sign",
+                f"Reduzido em {format_currency(economia_devolvidos_mensal)}"
+            )
+        ], className="kpi-grid"),
+        
+        # Charts
+        html.Div([
+            html.Div([
+                html.Div([
+                    html.H3("Evolução da Redução de Custos", className="chart-title")
+                ]),
+                dcc.Graph(id='timeline-reducao-chart')
+            ], className="chart-card", style={'width': '65%', 'display': 'inline-block', 'marginRight': '2%'}),
+            
+            html.Div([
+                html.Div([
+                    html.H3("Status dos Equipamentos", className="chart-title")
+                ]),
+                dcc.Graph(id='status-reducao-pie-chart')
+            ], className="chart-card", style={'width': '33%', 'display': 'inline-block'})
+        ], style={'marginBottom': '2rem'}),
+        
+        # Gráfico por tipo de equipamento
+        html.Div([
+            html.Div([
+                html.H3("Economia por Tipo de Equipamento", className="chart-title")
+            ]),
+            dcc.Graph(id='tipo-reducao-bar-chart')
+        ], className="chart-card", style={'marginBottom': '2rem'}),
+        
+        # Tabela detalhada
+        html.Div([
+            html.Div([
+                html.H3("Detalhamento dos Equipamentos", className="chart-title")
+            ]),
+            html.Div(id='reducao-data-table')
+        ], className="chart-card"),
+        
+        # Store para dados
+        dcc.Store(id='reducao-data-store', data=df.to_dict('records')),
+        
+        # Interval para atualização automática
+        dcc.Interval(
+            id='interval-reducao-custos',
+            interval=300*1000,
+            n_intervals=0
+        )
+    ])
+
+def create_dashboard_content():
+    return html.Div([
+        # Header
+        html.Div([
+            html.Div([
+                html.Div([
+                    html.H1("Portal TI - Dashboard Analytics"),
+                ], className="header-title"),
+                html.Div([
+                    html.Button([
+                        html.I(className="fas fa-sync-alt mr-2"),
+                        "Atualizar Dados"
+                    ], className="refresh-btn", id="refresh-btn")
+                ], className="header-actions")
+            ], className="header-content")
+        ], className="header"),
+
+        # KPIs Grid
+        html.Div(id="kpi-cards", className="kpi-grid"),
+        
+        # Charts Grid - 2 columns
+        html.Div([
+            html.Div([
+                dcc.Graph(id="colaboradores-situacao")
+            ], className="chart-card", style={'width': '48%', 'display': 'inline-block', 'marginRight': '2%'}),
+            
+            html.Div([
+                dcc.Graph(id="computadores-por-modelo")
+            ], className="chart-card", style={'width': '48%', 'display': 'inline-block', 'marginLeft': '2%'})
+        ], style={'marginBottom': '2rem'}),
+        
+        # Second row of charts
+        html.Div([
+            html.Div([
+                dcc.Graph(id="estoque-modelos-idade")
+            ], className="chart-card", style={'width': '48%', 'display': 'inline-block', 'marginRight': '2%'}),
+            
+            html.Div([
+                dcc.Graph(id="ocupacao-por-setor")
+            ], className="chart-card", style={'width': '48%', 'display': 'inline-block', 'marginLeft': '2%'})
+        ], style={'marginBottom': '2rem'}),
+        
+        # Tables Section
+        html.Div([
+            html.H3("📊 Análise Detalhada", style={
+                'color': '#1e1e1e', 
+                'marginBottom': '2rem', 
+                'fontWeight': '800',
+                'fontSize': '1.5rem'
+            })
+        ]),
+        
+        html.Div([
+            html.Div([
+                html.H4("⚠️ Terceirizados Inativos c/ Equipamentos", style={
+                    'margin-bottom': '1.5rem',
+                    'color': '#1e1e1e',
+                    'fontWeight': '600',
+                    'fontSize': '1.1rem'
+                }),
+                html.Div(id="terceirizados-inativos-table")
+            ], className="chart-card", style={'width': '48%', 'display': 'inline-block', 'marginRight': '2%'}),
+            
+            html.Div([
+                html.H4("🚨 Colaboradores Demitidos c/ Equipamentos", style={
+                    'margin-bottom': '1.5rem',
+                    'color': '#1e1e1e',
+                    'fontWeight': '600',
+                    'fontSize': '1.1rem'
+                }),
+                html.Div(id="demitidos-equipamentos-table")
+            ], className="chart-card", style={'width': '48%', 'display': 'inline-block', 'marginLeft': '2%'})
+        ]),
+        
+        html.Div([
+            html.Div([
+                html.H4("✅ Colaboradores Ativos c/ Equipamentos", style={
+                    'margin-bottom': '1.5rem',
+                    'color': '#1e1e1e',
+                    'fontWeight': '600',
+                    'fontSize': '1.1rem'
+                }),
+                html.Div(id="colaboradores-ativos-table", style={
+                    'maxHeight': '500px', 
+                    'overflowY': 'auto',
+                    'border': '1px solid #e9ecef',
+                    'borderRadius': '8px'
+                })
+            ], className="chart-card")
+        ]),
+        
+        dcc.Interval(
+            id='interval-component',
+            interval=300*1000,  
+            n_intervals=0
+        )
+    ])
+
+app.layout = html.Div([
+    create_sidebar(),
+    html.Div([
+        html.Div(id="page-content")
+    ], className="main-content")
+], className="dashboard-container")
+
+@app.callback(
+    Output('page-content', 'children'),
+    [Input('nav-dashboard', 'n_clicks'),
+     Input('nav-colaboradores', 'n_clicks'),
+     Input('nav-equipamentos', 'n_clicks'),
+     Input('nav-reducao-custos', 'n_clicks'),
+     Input('nav-config', 'n_clicks')]
+)
+def display_page(dash_clicks, colab_clicks, equip_clicks, reducao_clicks, config_clicks):
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        return create_dashboard_content()
+    
+    button_id = ctx.triggered[0]['prop_id'].split('.')[0]
+    
+    if button_id == 'nav-colaboradores':
+        return create_colaboradores_content()
+    elif button_id == 'nav-equipamentos':
+        return create_equipamentos_content()
+    elif button_id == 'nav-reducao-custos':
+        return create_reducao_custos_content()
+    elif button_id == 'nav-config':
+        return create_config_content()
+    else:
+        return create_dashboard_content()
+
+@app.callback(
+    [Output('nav-dashboard', 'className'),
+     Output('nav-colaboradores', 'className'),
+     Output('nav-equipamentos', 'className'),
+     Output('nav-reducao-custos', 'className'),
+     Output('nav-config', 'className')],
+    [Input('nav-dashboard', 'n_clicks'),
+     Input('nav-colaboradores', 'n_clicks'),
+     Input('nav-equipamentos', 'n_clicks'),
+     Input('nav-reducao-custos', 'n_clicks'),
+     Input('nav-config', 'n_clicks')]
+)
+def update_nav_classes(dash_clicks, colab_clicks, equip_clicks, reducao_clicks, config_clicks):
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        return "nav-item active", "nav-item", "nav-item", "nav-item", "nav-item"
+    
+    button_id = ctx.triggered[0]['prop_id'].split('.')[0]
+    
+    base_class = "nav-item"
+    active_class = "nav-item active"
+    
+    if button_id == 'nav-dashboard':
+        return active_class, base_class, base_class, base_class, base_class
+    elif button_id == 'nav-colaboradores':
+        return base_class, active_class, base_class, base_class, base_class
+    elif button_id == 'nav-equipamentos':
+        return base_class, base_class, active_class, base_class, base_class
+    elif button_id == 'nav-reducao-custos':
+        return base_class, base_class, base_class, active_class, base_class
+    elif button_id == 'nav-config':
+        return base_class, base_class, base_class, base_class, active_class
+    else:
+        return active_class, base_class, base_class, base_class, base_class
+
+@app.callback(
+    Output('current-time', 'children'),
+    [Input('interval-component', 'n_intervals')]
+)
+def update_time(n):
+    return datetime.now().strftime('%H:%M:%S - %d/%m/%Y')
+
+@app.callback(
+    Output('kpi-cards', 'children'),
+    [Input('interval-component', 'n_intervals'),
+     Input('refresh-btn', 'n_clicks')]
+)
+def update_kpis(n, refresh_clicks):
+    df_total = execute_query(QUERIES['total_computadores'])
+    total_computadores = df_total.iloc[0]['total_computadores'] if not df_total.empty else 0
+    
+    df_terc_inativos = execute_query(QUERIES['kpi_terceirizados_inativos'])
+    terceirizados_inativos = df_terc_inativos.iloc[0]['total_terceirizados_inativos'] if not df_terc_inativos.empty else 0
+    
+    df_terc_ativos = execute_query(QUERIES['kpi_terceirizados_ativos'])
+    terceirizados_ativos = df_terc_ativos.iloc[0]['total_terceirizados_ativos'] if not df_terc_ativos.empty else 0
+    
+    df_demitidos = execute_query(QUERIES['kpi_colaboradores_demitidos'])
+    colaboradores_demitidos = df_demitidos.iloc[0]['total_colaboradores_demitidos'] if not df_demitidos.empty else 0
+    
+    df_aviso_previo = execute_query(QUERIES['kpi_colaboradores_aviso_previo'])
+    colaboradores_aviso_previo = df_aviso_previo.iloc[0]['total_colaboradores_aviso_previo'] if not df_aviso_previo.empty else 0
+    
+    df_demitidos_equip = execute_query(QUERIES['kpi_demitidos_com_equipamentos'])
+    demitidos_com_equipamentos = df_demitidos_equip.iloc[0]['total_demitidos_com_equipamentos'] if not df_demitidos_equip.empty else 0
+    df_demitidos_equip_detail = execute_query(QUERIES['colaboradores_demitidos_com_equipamentos'])
+    
+    df_colab_ativos_equip = execute_query(QUERIES['kpi_colaboradores_ativos_com_equipamentos'])
+    colaboradores_ativos_equipamentos = df_colab_ativos_equip.iloc[0]['total_colaboradores_ativos_com_equipamentos'] if not df_colab_ativos_equip.empty else 0
+    
+    df_equip_sem_dono = execute_query(QUERIES['kpi_equipamentos_sem_dono'])
+    equipamentos_sem_dono = df_equip_sem_dono.iloc[0]['total_equipamentos_sem_dono'] if not df_equip_sem_dono.empty else 0
+    
+    df_ativos_sem_pc = execute_query(QUERIES['kpi_colaboradores_ativos_sem_computador'])
+    colaboradores_ativos_sem_pc = df_ativos_sem_pc.iloc[0]['total_colaboradores_ativos_sem_computador'] if not df_ativos_sem_pc.empty else 0
+    
+    df_estoque_total = execute_query(QUERIES['total_equipamentos_estoque'])
+    total_estoque = df_estoque_total.iloc[0]['TotalEmEstoque'] if not df_estoque_total.empty and df_estoque_total.iloc[0]['TotalEmEstoque'] is not None else 0
+    
+    df_equip_alocados = execute_query(QUERIES['kpi_equipamentos_alocados'])
+    equipamentos_alocados = df_equip_alocados.iloc[0]['total_equipamentos_alocados'] if not df_equip_alocados.empty else 0
+    taxa_alocacao = 0
+    if (equipamentos_alocados or 0) + (total_estoque or 0) > 0:
+        total_computadores_calc = equipamentos_alocados + total_estoque
+        taxa_alocacao = round((equipamentos_alocados / total_computadores_calc) * 100, 1)
+    
+    idade_path = os.path.join(os.path.dirname(__file__), 'idade_computadores.xlsx')
+    media_idade_anos = None
+    if os.path.exists(idade_path):
+        try:
+            plan = pd.read_excel(idade_path)
+            if 'Modelo' in plan.columns and ('AnoCompra' in plan.columns or 'DataCompra' in plan.columns):
+                if 'AnoCompra' in plan.columns:
+                    plan['AnoCompra'] = pd.to_numeric(plan['AnoCompra'], errors='coerce')
+                else:
+                    raw = plan['DataCompra']
+                    ano_col = pd.to_numeric(raw, errors='coerce')
+                    if ano_col.notna().any():
+                        plan['AnoCompra'] = ano_col.astype('Int64')
+                    else:
+                        plan['DataCompra'] = pd.to_datetime(plan['DataCompra'], errors='coerce')
+                        plan['AnoCompra'] = plan['DataCompra'].dt.year
+                plan = plan.dropna(subset=['AnoCompra'])
+                plan['AnoCompra'] = plan['AnoCompra'].astype(int)
+                ano_atual = datetime.now().year
+                plan = plan[(plan['AnoCompra'] >= 2010) & (plan['AnoCompra'] <= ano_atual)]
+                
+                plan['idade_anos'] = (ano_atual - plan['AnoCompra']).astype(float)
+                plan = plan[plan['idade_anos'] <= 15]
+                
+                if not plan['idade_anos'].empty:
+                    media_idade_anos = round(plan['idade_anos'].mean(), 1)
+        except Exception as _:
+            media_idade_anos = None
+    
+    detalhes_children = []
+    if not df_demitidos_equip_detail.empty:
+        registros = df_demitidos_equip_detail.to_dict('records')
+        agrupado = {}
+        for row in registros:
+            nome = row.get('Colaborador', 'Sem Nome')
+            chefia = row.get('Chefia', '-')
+            comp = (row.get('ModeloComputador') or '').strip()
+            perif = (row.get('ModeloPeriferico') or '').strip()
+            chave = (nome, chefia)
+            if chave not in agrupado:
+                agrupado[chave] = []
+            for equip in [comp, perif]:
+                if equip and equip not in agrupado[chave]:
+                    agrupado[chave].append(equip)
+        itens = []
+        for (nome, chefia), equipamentos_list in list(agrupado.items())[:10]:
+            equipamentos = ' / '.join(equipamentos_list)
+            descricao = f"{nome} — {chefia}" + (f" — {equipamentos}" if equipamentos else "")
+            itens.append(html.Li(descricao, style={'borderBottom': '1px solid #e5e5e5', 'padding': '4px 0'}))
+        detalhes_children = [
+            html.Div("Ex funcionario com equipamento", style={'fontWeight': 'bold', 'marginBottom': '0.5rem'}),
+            html.Ul(itens, style={'listStyleType': 'none', 'paddingLeft': 0, 'margin': 0})
+        ]
+    else:
+        detalhes_children = [html.Div("Sem demitidos com equipamentos", style={'fontStyle': 'italic'})]
+
+    card_total = create_kpi_card("Total de Computadores", total_computadores, "fas fa-desktop", "Total no sistema")
+    card_terc_inativos = create_kpi_card("Terceirizados Inativos", terceirizados_inativos, "fas fa-user-times", "Com equipamentos")
+    card_terc_ativos = create_kpi_card("Terceirizados Ativos", terceirizados_ativos, "fas fa-user-check", "Com equipamentos")
+    card_demitidos = create_kpi_card("Colaboradores Demitidos", colaboradores_demitidos, "fas fa-user-slash", f"{demitidos_com_equipamentos} com equipamentos")
+    card_aviso_wrapped = html.Div(create_kpi_card("Aviso Prévio", colaboradores_aviso_previo, "fas fa-clock", "Colaboradores"), id='kpi-aviso')
+    card_colab_ativos = create_kpi_card("Colaboradores c/ Equipamentos", colaboradores_ativos_equipamentos, "fas fa-users", "Ativos com equipamentos")
+    card_equip_nao_controlados = create_kpi_card("Equipamentos não controlados", equipamentos_sem_dono, "fas fa-exclamation-triangle", "Sem controle administrativo")
+    card_ativos_sem_pc = create_kpi_card("Ativos sem computador", colaboradores_ativos_sem_pc, "fas fa-user", "Colaboradores ativos")
+    card_taxa_aloc = create_kpi_card("Taxa de alocação", f"{taxa_alocacao}%", "fas fa-chart-line", "Equip. alocados / total")
+    card_media_idade = create_kpi_card("Média idade PCs", media_idade_anos if media_idade_anos is not None else '-', "fas fa-hourglass-half", "Anos")
+
+    df_aviso_detail = execute_query(QUERIES['colaboradores_aviso_previo'])
+    aviso_children = []
+    if not df_aviso_detail.empty:
+        nomes = df_aviso_detail['Nome'].dropna().astype(str).head(15).tolist()
+        itens_aviso = [html.Li(nome, style={'borderBottom': '1px solid #e5e5e5', 'padding': '4px 0'}) for nome in nomes]
+        aviso_children = [
+            html.Div("Colaboradores em aviso prévio", style={'fontWeight': 'bold', 'marginBottom': '0.5rem'}),
+            html.Ul(itens_aviso, style={'listStyleType': 'none', 'paddingLeft': 0, 'margin': 0})
+        ]
+    else:
+        aviso_children = [html.Div("Sem colaboradores em aviso prévio", style={'fontStyle': 'italic'})]
+
+    popover_aviso = dbc.Popover([
+        dbc.PopoverHeader("Aviso Prévio"),
+        dbc.PopoverBody(aviso_children)
+    ], id='popover-aviso', target='kpi-aviso', trigger='hover', placement='auto')
+
+    return [
+        card_total,
+        card_terc_inativos,
+        card_terc_ativos,
+        card_demitidos,
+        card_aviso_wrapped,
+        card_colab_ativos,
+        card_equip_nao_controlados,
+        card_ativos_sem_pc,
+        card_taxa_aloc,
+        card_media_idade,
+        
+        popover_aviso
+    ]
+
+@app.callback(
+    Output('colaboradores-situacao', 'figure'),
+    [Input('interval-component', 'n_intervals'),
+     Input('refresh-btn', 'n_clicks')]
+)
+def update_colaboradores_situacao(n, refresh_clicks):
+    df_demitidos = execute_query(QUERIES['kpi_colaboradores_demitidos'])
+    df_aviso_previo = execute_query(QUERIES['kpi_colaboradores_aviso_previo'])
+    df_ativos = execute_query(QUERIES['kpi_colaboradores_ativos'])
+    
+    demitidos = df_demitidos.iloc[0]['total_colaboradores_demitidos'] if not df_demitidos.empty else 0
+    aviso_previo = df_aviso_previo.iloc[0]['total_colaboradores_aviso_previo'] if not df_aviso_previo.empty else 0
+    ativos = df_ativos.iloc[0]['total_colaboradores_ativos'] if not df_ativos.empty else 0
+    
+    if demitidos == 0 and aviso_previo == 0 and ativos == 0:
+        return go.Figure().add_annotation(
+            text="Sem dados disponíveis", 
+            showarrow=False,
+            font=dict(size=16, color='#6c757d')
+        )
+    
+    categories = ['Ativos', 'Demitidos', 'Aviso Prévio']
+    values = [ativos, demitidos, aviso_previo]
+    colors = ['#00d4aa', '#ff6b6b', '#ffc107']
+    
+    fig = px.pie(values=values, names=categories, 
+                 title='<b>Situação dos Colaboradores</b>',
+                 color_discrete_sequence=colors)
+    
+    fig.update_traces(
+        textposition='inside', 
+        textinfo='percent+label',
+        hovertemplate='<b>%{label}</b><br>Quantidade: %{value}<br>Percentual: %{percent}<extra></extra>',
+        marker=dict(line=dict(color='#ffffff', width=3))
+    )
+    
+    fig.update_layout(
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)',
+        font=dict(color='#1e1e1e', size=12, family='Inter'),
+        title=dict(
+            font=dict(size=18, color='#1e1e1e', family='Inter'),
+            x=0.5,
+            y=0.95
+        ),
+        showlegend=True,
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=-0.1,
+            xanchor="center",
+            x=0.5,
+            font=dict(size=11)
+        ),
+        margin=dict(t=60, b=60, l=20, r=20),
+        height=400
+    )
+    
+    return fig
+
+
+@app.callback(
+    Output('computadores-por-modelo', 'figure'),
+    [Input('interval-component', 'n_intervals'),
+     Input('refresh-btn', 'n_clicks')]
+)
+def update_computadores_por_modelo(n, refresh_clicks):
+    df = execute_query(QUERIES['computadores_por_modelo'])
+    
+    if df.empty:
+        return go.Figure().add_annotation(
+            text="Sem dados disponíveis", 
+            showarrow=False,
+            font=dict(size=16, color='#6c757d')
+        )
+    
+    df_top = df.head(8)
+    
+    colors = ['#6366f1', '#8b5cf6', '#ec4899', '#ef4444', '#f97316', '#eab308', '#22c55e', '#06b6d4']
+    
+    fig = go.Figure(data=[
+        go.Bar(
+            x=df_top['Modelo'], 
+            y=df_top['quantidade'],
+            marker=dict(
+                color=colors[:len(df_top)],
+                line=dict(color='rgba(255,255,255,0.8)', width=2)
+            ),
+            hovertemplate='<b>%{x}</b><br>Quantidade: %{y}<extra></extra>'
+        )
+    ])
+    
+    fig.update_layout(
+        title=dict(
+            text='<b>Top 8 Modelos de Computadores</b>',
+            font=dict(size=18, color='#1e1e1e', family='Inter'),
+            x=0.5,
+            y=0.95
+        ),
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)',
+        font=dict(color='#1e1e1e', size=12, family='Inter'),
+        showlegend=False,
+        margin=dict(t=60, b=80, l=60, r=40),
+        height=400,
+        xaxis=dict(
+            showgrid=False,
+            tickangle=-45,
+            title=dict(text='<b>Modelo</b>', font=dict(size=14)),
+            linecolor='#e9ecef',
+            tickfont=dict(size=10)
+        ),
+        yaxis=dict(
+            showgrid=True,
+            gridcolor='rgba(233,236,239,0.5)',
+            title=dict(text='<b>Quantidade</b>', font=dict(size=14)),
+            linecolor='#e9ecef'
+        )
+    )
+    
+    return fig
+
+@app.callback(
+    Output('ocupacao-por-setor', 'figure'),
+    [Input('interval-component', 'n_intervals'),
+     Input('refresh-btn', 'n_clicks')]
+)
+def update_ocupacao_por_setor(n, refresh_clicks):
+    df = execute_query(QUERIES['ocupacao_por_setor'])
+    
+    if df.empty:
+        return go.Figure().add_annotation(
+            text="Sem dados disponíveis", 
+            showarrow=False,
+            font=dict(size=16, color='#6c757d')
+        )
+
+    df_top = df.head(10)
+    
+    fig = go.Figure()
+    
+    fig.add_trace(go.Bar(
+        y=df_top['Setor'],
+        x=df_top['TotalColaboradores'],
+        orientation='h',
+        name='Total Colaboradores',
+        marker=dict(color='#e9ecef'),
+        hovertemplate='<b>%{y}</b><br>Total: %{x}<extra></extra>'
+    ))
+    
+    # Barras de colaboradores com equipamento (frente)
+    fig.add_trace(go.Bar(
+        y=df_top['Setor'],
+        x=df_top['ComEquipamento'],
+        orientation='h',
+        name='Com Equipamento',
+        marker=dict(color='#6366f1'),
+        hovertemplate='<b>%{y}</b><br>Com Equipamento: %{x}<br>Taxa: %{customdata}%<extra></extra>',
+        customdata=df_top['TaxaOcupacao']
+    ))
+    
+    fig.update_layout(
+        title=dict(
+            text='<b>Taxa de Ocupação de Equipamentos por Setor</b>',
+            font=dict(size=18, color='#1e1e1e', family='Inter'),
+            x=0.5,
+            y=0.95
+        ),
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)',
+        font=dict(color='#1e1e1e', size=12, family='Inter'),
+        showlegend=True,
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=-0.2,
+            xanchor="center",
+            x=0.5,
+            font=dict(size=11)
+        ),
+        margin=dict(t=60, b=80, l=150, r=40),
+        height=400,
+        xaxis=dict(
+            showgrid=True,
+            gridcolor='rgba(233,236,239,0.5)',
+            title=dict(text='<b>Quantidade de Colaboradores</b>', font=dict(size=14)),
+            linecolor='#e9ecef'
+        ),
+        yaxis=dict(
+            showgrid=False,
+            title=dict(text='<b>Setor</b>', font=dict(size=14)),
+            linecolor='#e9ecef',
+            tickfont=dict(size=10)
+        ),
+        barmode='overlay'
+    )
+    
+    return fig
+
+@app.callback(
+    Output('estoque-modelos-idade', 'figure'),
+    [Input('interval-component', 'n_intervals'),
+     Input('refresh-btn', 'n_clicks')]
+)
+def update_estoque_modelos_idade(n, refresh_clicks):
+    # 1) Quantidade por modelo no estoque (DB)
+    df_estoque = execute_query(QUERIES['modelos_em_estoque'])
+    if df_estoque.empty:
+        return go.Figure().add_annotation(
+            text="Sem dados de estoque", 
+            showarrow=False,
+            font=dict(size=16, color='#6c757d')
+        )
+    df_estoque['Modelo'] = df_estoque['Modelo'].astype(str).str.strip()
+
+    # 2) Idade média por modelo (Excel)
+    idade_path = os.path.join(os.path.dirname(__file__), 'idade_computadores.xlsx')
+    df_idade = None
+    if os.path.exists(idade_path):
+        try:
+            plan = pd.read_excel(idade_path)
+            if 'Modelo' in plan.columns and ('AnoCompra' in plan.columns or 'DataCompra' in plan.columns):
+                plan['Modelo'] = plan['Modelo'].astype(str).str.strip()
+                if 'AnoCompra' in plan.columns:
+                    plan['AnoCompra'] = pd.to_numeric(plan['AnoCompra'], errors='coerce')
+                else:
+                    # DataCompra pode ser o ano direto (string/numero) ou uma data
+                    ano_col = pd.to_numeric(plan['DataCompra'], errors='coerce')
+                    if ano_col.notna().any():
+                        plan['AnoCompra'] = ano_col.astype('Int64')
+                    else:
+                        plan['DataCompra'] = pd.to_datetime(plan['DataCompra'], errors='coerce')
+                        plan['AnoCompra'] = plan['DataCompra'].dt.year
+                plan = plan.dropna(subset=['Modelo', 'AnoCompra'])
+                plan['AnoCompra'] = plan['AnoCompra'].astype(int)
+                # Filtrar anos plausíveis (2010..ano atual) - equipamentos muito antigos podem estar com dados incorretos
+                ano_atual = datetime.now().year
+                plan = plan[(plan['AnoCompra'] >= 2010) & (plan['AnoCompra'] <= ano_atual)]
+                
+                # Filtrar outliers - idade máxima de 15 anos
+                plan['idade_anos'] = (ano_atual - plan['AnoCompra']).astype(float)
+                plan = plan[plan['idade_anos'] <= 15]
+                df_idade = plan.groupby('Modelo', as_index=False)['idade_anos'].mean()
+        except Exception:
+            df_idade = None
+
+    # 3) Join por modelo e montar donut chart (somente modelos presentes no Excel)
+    if df_idade is None or df_idade.empty:
+        return go.Figure().add_annotation(
+            text="Excel sem dados válidos (Modelo + AnoCompra/DataCompra)", 
+            showarrow=False,
+            font=dict(size=16, color='#6c757d')
+        )
+    df_merge = pd.merge(df_estoque, df_idade, on='Modelo', how='inner')
+    if df_merge.empty:
+        return go.Figure().add_annotation(
+            text="Nenhum modelo do Excel encontrado no estoque", 
+            showarrow=False,
+            font=dict(size=16, color='#6c757d')
+        )
+
+    # Cores modernas para o donut chart
+    colors = ['#6366f1', '#8b5cf6', '#ec4899', '#ef4444', '#f97316', '#eab308', '#22c55e', '#06b6d4']
+    
+    fig = go.Figure(data=[go.Pie(
+        labels=df_merge['Modelo'],
+        values=df_merge['Quantidade'],
+        hole=0.4,
+        marker=dict(
+            colors=colors[:len(df_merge)],
+            line=dict(color='#ffffff', width=3)
+        ),
+        hovertemplate='<b>%{label}</b><br>Quantidade: %{value}<br>Idade média: %{customdata:.1f} anos<extra></extra>',
+        customdata=df_merge['idade_anos'],
+        textposition='inside',
+        textinfo='percent'
+    )])
+    
+    fig.update_layout(
+        title=dict(
+            text='<b>Estoque por Modelo (com idade média)</b>',
+            font=dict(size=18, color='#1e1e1e', family='Inter'),
+            x=0.5,
+            y=0.95
+        ),
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)',
+        font=dict(color='#1e1e1e', size=12, family='Inter'),
+        showlegend=True,
+        legend=dict(
+            orientation="v",
+            yanchor="middle",
+            y=0.5,
+            xanchor="left",
+            x=1.05,
+            font=dict(size=10)
+        ),
+        margin=dict(t=60, b=40, l=40, r=150),
+        height=400,
+        annotations=[
+            dict(
+                text="<b>Estoque<br>Total</b>",
+                x=0.5, y=0.5,
+                font_size=16,
+                font_color='#6c757d',
+                showarrow=False
+            )
+        ]
+    )
+    
+    return fig
+
+@app.callback(
+    Output('terceirizados-inativos-table', 'children'),
+    [Input('interval-component', 'n_intervals'),
+     Input('refresh-btn', 'n_clicks')]
+)
+def update_terceirizados_inativos_table(n, refresh_clicks):
+    df = execute_query(QUERIES['terceirizados_inativos_com_equipamentos'])
+    
+    if df.empty:
+        return html.P("Nenhum terceirizado inativo com equipamentos", 
+                     style={'text-align': 'center', 'color': '#6c757d', 'fontStyle': 'italic'})
+    
+    df_top = df.head(8)
+    
+    return dash_table.DataTable(
+        data=df_top.to_dict('records'),
+        columns=[
+            {"name": "Serial", "id": "Serial"},
+            {"name": "Modelo", "id": "Modelo"},
+            {"name": "Nome", "id": "Nome"},
+            {"name": "Matrícula", "id": "Matricula_Terc"},
+            {"name": "Chefia", "id": "Chefia"}
+        ],
+        style_table={
+            'overflowX': 'auto',
+            'maxWidth': '100%',
+            'borderRadius': '8px',
+            'overflow': 'hidden'
+        },
+        style_cell={
+            'textAlign': 'left',
+            'padding': '12px 16px',
+            'fontFamily': 'Segoe UI, sans-serif',
+            'fontSize': '0.875rem',
+            'whiteSpace': 'normal',
+            'height': 'auto',
+            'border': 'none',
+            'borderBottom': '1px solid #e9ecef'
+        },
+        style_header={
+            'backgroundColor': '#1e1e1e',
+            'color': 'white',
+            'fontWeight': '600',
+            'textTransform': 'uppercase',
+            'letterSpacing': '0.5px',
+            'fontSize': '0.8rem',
+            'border': 'none'
+        },
+        style_data={
+            'backgroundColor': '#ffffff',
+            'border': 'none'
+        },
+        style_data_conditional=[
+            {
+                'if': {'row_index': 'odd'},
+                'backgroundColor': '#f8f9fa'
+            },
+            {
+                'if': {'state': 'active'},
+                'backgroundColor': 'rgba(99, 102, 241, 0.1)',
+                'border': '1px solid #6366f1'
+            }
+        ]
+    )
+
+@app.callback(
+    Output('colaboradores-ativos-table', 'children'),
+    [Input('interval-component', 'n_intervals'),
+     Input('refresh-btn', 'n_clicks')]
+)
+def update_colaboradores_ativos_table(n, refresh_clicks):
+    df = execute_query(QUERIES['colaboradores_ativos_com_equipamentos'])
+    
+    if df.empty:
+        return html.P("Nenhum colaborador ativo com equipamentos", 
+                     style={'text-align': 'center', 'color': '#6c757d', 'fontStyle': 'italic'})
+    
+    df_top = df.head(10000)
+    
+    return dash_table.DataTable(
+        data=df_top.to_dict('records'),
+        columns=[
+            {"name": "Serial", "id": "Serial"},
+            {"name": "Modelo", "id": "Modelo"},
+            {"name": "Matrícula", "id": "Matricula"},
+            {"name": "Nome", "id": "Nome"}
+        ],
+        style_table={
+            'overflowX': 'auto',
+            'maxWidth': '100%',
+            'borderRadius': '8px',
+            'overflow': 'hidden'
+        },
+        style_cell={
+            'textAlign': 'left',
+            'padding': '12px 16px',
+            'fontFamily': 'Segoe UI, sans-serif',
+            'fontSize': '0.875rem',
+            'whiteSpace': 'normal',
+            'height': 'auto',
+            'border': 'none',
+            'borderBottom': '1px solid #e9ecef'
+        },
+        style_header={
+            'backgroundColor': '#1e1e1e',
+            'color': 'white',
+            'fontWeight': '600',
+            'textTransform': 'uppercase',
+            'letterSpacing': '0.5px',
+            'fontSize': '0.8rem',
+            'border': 'none'
+        },
+        style_data={
+            'backgroundColor': '#ffffff',
+            'border': 'none'
+        },
+        style_data_conditional=[
+            {
+                'if': {'row_index': 'odd'},
+                'backgroundColor': '#f8f9fa'
+            },
+            {
+                'if': {'state': 'active'},
+                'backgroundColor': 'rgba(99, 102, 241, 0.1)',
+                'border': '1px solid #6366f1'
+            }
+        ]
+    )
+
+@app.callback(
+    Output('demitidos-equipamentos-table', 'children'),
+    [Input('interval-component', 'n_intervals'),
+     Input('refresh-btn', 'n_clicks')]
+)
+def update_demitidos_equipamentos_table(n, refresh_clicks):
+    df = execute_query(QUERIES['colaboradores_demitidos_com_equipamentos'])
+    
+    if df.empty:
+        return html.P("Nenhum colaborador demitido com equipamentos", 
+                     style={'text-align': 'center', 'color': '#6c757d', 'fontStyle': 'italic'})
+    
+    # Agrupa por colaborador para que o nome apareça uma única vez
+    def _join_unique(series):
+        valores = [str(x).strip() for x in series if pd.notna(x) and str(x).strip() != '']
+        if not valores:
+            return ''
+        # Mantém ordem de aparição, removendo duplicados
+        vistos = set()
+        ordenado_sem_dup = []
+        for v in valores:
+            if v not in vistos:
+                vistos.add(v)
+                ordenado_sem_dup.append(v)
+        return ' / '.join(ordenado_sem_dup)
+
+    colunas_chave = ['Colaborador', 'CCusto', 'Chefia']
+    for col in colunas_chave:
+        if col not in df.columns:
+            df[col] = None
+
+    df_grouped = (
+        df.groupby(colunas_chave, dropna=False)
+          .agg({
+              'ModeloComputador': _join_unique if 'ModeloComputador' in df.columns else lambda s: '',
+              'ModeloPeriferico': _join_unique if 'ModeloPeriferico' in df.columns else lambda s: ''
+          })
+          .reset_index()
+    )
+
+    df_top = df_grouped.head(8)
+    
+    return dash_table.DataTable(
+        data=df_top.to_dict('records'),
+        columns=[
+            {"name": "Colaborador", "id": "Colaborador"},
+            {"name": "Centro Custo", "id": "CCusto"},
+            {"name": "Chefia", "id": "Chefia"},
+            {"name": "Computador", "id": "ModeloComputador"},
+            {"name": "Periférico", "id": "ModeloPeriferico"}
+        ],
+        style_table={
+            'overflowX': 'auto',
+            'maxWidth': '100%',
+            'borderRadius': '8px',
+            'overflow': 'hidden'
+        },
+        style_cell={
+            'textAlign': 'left',
+            'padding': '12px 16px',
+            'fontFamily': 'Segoe UI, sans-serif',
+            'fontSize': '0.875rem',
+            'whiteSpace': 'normal',
+            'height': 'auto',
+            'border': 'none',
+            'borderBottom': '1px solid #e9ecef'
+        },
+        style_header={
+            'backgroundColor': '#1e1e1e',
+            'color': 'white',
+            'fontWeight': '600',
+            'textTransform': 'uppercase',
+            'letterSpacing': '0.5px',
+            'fontSize': '0.8rem',
+            'border': 'none'
+        },
+        style_data={
+            'backgroundColor': '#ffffff',
+            'border': 'none'
+        },
+        style_data_conditional=[
+            {
+                'if': {'row_index': 'odd'},
+                'backgroundColor': '#f8f9fa'
+            },
+            {
+                'if': {'state': 'active'},
+                'backgroundColor': 'rgba(99, 102, 241, 0.1)',
+                'border': '1px solid #6366f1'
+            }
+        ]
+    )
+
+# ==================== CALLBACKS PARA ABA COLABORADORES ====================
+@app.callback(
+    Output('current-time-colab', 'children'),
+    [Input('interval-colaboradores', 'n_intervals')]
+)
+def update_time_colab(n):
+    return datetime.now().strftime('%H:%M:%S - %d/%m/%Y')
+
+@app.callback(
+    Output('colaboradores-por-setor', 'figure'),
+    [Input('interval-colaboradores', 'n_intervals'),
+     Input('refresh-btn-colab', 'n_clicks')]
+)
+def update_colaboradores_por_setor(n, refresh_clicks):
+    df = execute_query(QUERIES['usuarios_por_setor'])
+    
+    if df.empty:
+        return go.Figure().add_annotation(
+            text="Sem dados disponíveis", 
+            showarrow=False,
+            font=dict(size=16, color='#6c757d')
+        )
+    
+    # Pegar top 10 setores
+    df_top = df.head(10)
+    
+    # Cores vibrantes para setores
+    colors = ['#6366f1', '#8b5cf6', '#ec4899', '#ef4444', '#f97316', '#eab308', '#22c55e', '#06b6d4', '#84cc16', '#f59e0b']
+    
+    fig = go.Figure(data=[
+        go.Bar(
+            y=df_top['Setor'], 
+            x=df_top['quantidade'],
+            orientation='h',
+            marker=dict(
+                color=colors[:len(df_top)],
+                line=dict(color='rgba(255,255,255,0.8)', width=2)
+            ),
+            hovertemplate='<b>%{y}</b><br>Colaboradores: %{x}<extra></extra>'
+        )
+    ])
+    
+    fig.update_layout(
+        title=dict(
+            text='<b>Colaboradores por Setor</b>',
+            font=dict(size=18, color='#1e1e1e', family='Inter'),
+            x=0.5,
+            y=0.95
+        ),
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)',
+        font=dict(color='#1e1e1e', size=12, family='Inter'),
+        showlegend=False,
+        margin=dict(t=60, b=60, l=150, r=40),
+        height=400,
+        xaxis=dict(
+            showgrid=True,
+            gridcolor='rgba(233,236,239,0.5)',
+            title=dict(text='<b>Quantidade</b>', font=dict(size=14)),
+            linecolor='#e9ecef'
+        ),
+        yaxis=dict(
+            showgrid=False,
+            title=dict(text='<b>Setor</b>', font=dict(size=14)),
+            linecolor='#e9ecef',
+            tickfont=dict(size=10)
+        )
+    )
+    
+    return fig
+
+@app.callback(
+    Output('colaboradores-por-chefia', 'figure'),
+    [Input('interval-colaboradores', 'n_intervals'),
+     Input('refresh-btn-colab', 'n_clicks')]
+)
+def update_colaboradores_por_chefia(n, refresh_clicks):
+    df = execute_query(QUERIES['colaboradores_por_chefia'])
+    
+    if df.empty:
+        return go.Figure().add_annotation(
+            text="Sem dados disponíveis", 
+            showarrow=False,
+            font=dict(size=16, color='#6c757d')
+        )
+    
+    # Pegar top 8 chefias
+    df_top = df.head(8)
+    
+    # Cores para o donut
+    colors = ['#6366f1', '#8b5cf6', '#ec4899', '#ef4444', '#f97316', '#eab308', '#22c55e', '#06b6d4']
+    
+    fig = go.Figure(data=[go.Pie(
+        labels=df_top['Chefia'],
+        values=df_top['quantidade'],
+        hole=0.4,
+        marker=dict(
+            colors=colors[:len(df_top)],
+            line=dict(color='#ffffff', width=3)
+        ),
+        hovertemplate='<b>%{label}</b><br>Colaboradores: %{value}<br>Percentual: %{percent}<extra></extra>',
+        textposition='inside',
+        textinfo='percent'
+    )])
+    
+    fig.update_layout(
+        title=dict(
+            text='<b>Colaboradores por Chefia</b>',
+            font=dict(size=18, color='#1e1e1e', family='Inter'),
+            x=0.5,
+            y=0.95
+        ),
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)',
+        font=dict(color='#1e1e1e', size=12, family='Inter'),
+        showlegend=True,
+        legend=dict(
+            orientation="v",
+            yanchor="middle",
+            y=0.5,
+            xanchor="left",
+            x=1.05,
+            font=dict(size=10)
+        ),
+        margin=dict(t=60, b=40, l=40, r=150),
+        height=400,
+        annotations=[
+            dict(
+                text="<b>Total<br>Colaboradores</b>",
+                x=0.5, y=0.5,
+                font_size=14,
+                font_color='#6c757d',
+                showarrow=False
+            )
+        ]
+    )
+    
+    return fig
+
+@app.callback(
+    Output('colaboradores-detalhado-table', 'children'),
+    [Input('interval-colaboradores', 'n_intervals'),
+     Input('refresh-btn-colab', 'n_clicks')]
+)
+def update_colaboradores_detalhado_table(n, refresh_clicks):
+    df = execute_query(QUERIES['colaboradores_detalhado'])
+    
+    if df.empty:
+        return html.P("Nenhum colaborador encontrado", 
+                     style={'text-align': 'center', 'color': '#6c757d', 'fontStyle': 'italic'})
+    
+    return dash_table.DataTable(
+        data=df.to_dict('records'),
+        columns=[
+            {"name": "Nome", "id": "Nome"},
+            {"name": "Matrícula", "id": "Matricula"},
+            {"name": "Setor", "id": "Setor"},
+            {"name": "Chefia", "id": "Chefia"},
+            {"name": "Status Equipamento", "id": "StatusEquipamento"},
+            {"name": "Modelo Computador", "id": "ModeloComputador"}
+        ],
+        style_table={
+            'overflowX': 'auto',
+            'maxWidth': '100%',
+            'borderRadius': '8px',
+            'overflow': 'hidden'
+        },
+        style_cell={
+            'textAlign': 'left',
+            'padding': '12px 16px',
+            'fontFamily': 'Segoe UI, sans-serif',
+            'fontSize': '0.875rem',
+            'whiteSpace': 'normal',
+            'height': 'auto',
+            'border': 'none',
+            'borderBottom': '1px solid #e9ecef'
+        },
+        style_header={
+            'backgroundColor': '#1e1e1e',
+            'color': 'white',
+            'fontWeight': '600',
+            'textTransform': 'uppercase',
+            'letterSpacing': '0.5px',
+            'fontSize': '0.8rem',
+            'border': 'none'
+        },
+        style_data={
+            'backgroundColor': '#ffffff',
+            'border': 'none'
+        },
+        style_data_conditional=[
+            {
+                'if': {'row_index': 'odd'},
+                'backgroundColor': '#f8f9fa'
+            },
+            {
+                'if': {'filter_query': '{StatusEquipamento} = "Sem Equipamento"'},
+                'backgroundColor': '#fff3cd',
+                'color': '#856404'
+            },
+            {
+                'if': {'filter_query': '{StatusEquipamento} = "Com Equipamento"'},
+                'backgroundColor': '#d1edff',
+                'color': '#0c5460'
+            },
+            {
+                'if': {'state': 'active'},
+                'backgroundColor': 'rgba(99, 102, 241, 0.1)',
+                'border': '1px solid #6366f1'
+            }
+        ],
+        filter_action="native",
+        sort_action="native",
+        page_action="native",
+        page_current=0,
+        page_size=50
+    )
+
+def calcular_criticidade_equipamentos():
+    """
+    Calcula a criticidade dos equipamentos baseado na idade.
+    Retorna DataFrame com criticidade calculada.
+    """
+    # Buscar equipamentos do banco
+    df_equipamentos = execute_query(QUERIES['equipamentos_criticidade'])
+    
+    if df_equipamentos.empty:
+        return pd.DataFrame()
+    
+    # Ler arquivo Excel com idades
+    idade_path = os.path.join(os.path.dirname(__file__), 'idade_computadores.xlsx')
+    if not os.path.exists(idade_path):
+        return pd.DataFrame()
+    
+    try:
+        plan = pd.read_excel(idade_path)
+        
+        if 'Modelo' not in plan.columns or ('AnoCompra' not in plan.columns and 'DataCompra' not in plan.columns):
+            return pd.DataFrame()
+        
+        # Processar dados de idade
+        plan['Modelo'] = plan['Modelo'].astype(str).str.strip()
+        
+        if 'AnoCompra' in plan.columns:
+            plan['AnoCompra'] = pd.to_numeric(plan['AnoCompra'], errors='coerce')
+        else:
+            ano_col = pd.to_numeric(plan['DataCompra'], errors='coerce')
+            if ano_col.notna().any():
+                plan['AnoCompra'] = ano_col.astype('Int64')
+            else:
+                plan['DataCompra'] = pd.to_datetime(plan['DataCompra'], errors='coerce')
+                plan['AnoCompra'] = plan['DataCompra'].dt.year
+        
+        plan = plan.dropna(subset=['Modelo', 'AnoCompra'])
+        plan['AnoCompra'] = plan['AnoCompra'].astype(int)
+        
+        # Filtrar anos plausíveis
+        ano_atual = datetime.now().year
+        plan = plan[(plan['AnoCompra'] >= 2010) & (plan['AnoCompra'] <= ano_atual)]
+        
+        # Calcular idade
+        plan['idade_anos'] = (ano_atual - plan['AnoCompra']).astype(float)
+        plan = plan[plan['idade_anos'] <= 15]
+        
+        # Calcular idade média por modelo
+        idade_media = plan.groupby('Modelo', as_index=False)['idade_anos'].mean()
+        
+        # Merge com equipamentos - INNER JOIN para manter apenas equipamentos com dados de idade
+        df_merge = pd.merge(df_equipamentos, idade_media, on='Modelo', how='inner')
+        
+        # Melhorar informações de status
+        def formatar_status(row):
+            status = row.get('Status', '')
+            if status == 'Não Controlado':
+                return 'Equipamento Não Controlado'
+            elif status == 'Estoque':
+                return 'Reserva/Backup (Estoque)'
+            else:
+                return status
+        
+        df_merge['StatusDetalhado'] = df_merge.apply(formatar_status, axis=1)
+        
+        # Classificar criticidade (removido "Sem Dados" pois usamos inner join)
+        def classificar_criticidade(idade):
+            if idade >= 5:
+                return 'Muito Crítico'
+            elif idade >= 4:
+                return 'Crítico'
+            elif idade >= 3:
+                return 'Atenção'
+            elif idade >= 2:
+                return 'Moderado'
+            else:
+                return 'Bom Estado'
+        
+        df_merge['Criticidade'] = df_merge['idade_anos'].apply(classificar_criticidade)
+        df_merge['IdadeFormatada'] = df_merge['idade_anos'].apply(
+            lambda x: f"{x:.1f} anos"
+        )
+        
+        return df_merge
+        
+    except Exception as e:
+        print(f"Erro ao calcular criticidade: {e}")
+        return pd.DataFrame()
+
+# ==================== CALLBACKS PARA ABA EQUIPAMENTOS ====================
+@app.callback(
+    Output('current-time-equip', 'children'),
+    [Input('interval-equipamentos', 'n_intervals')]
+)
+def update_time_equip(n):
+    return datetime.now().strftime('%H:%M:%S - %d/%m/%Y')
+
+@app.callback(
+    Output('equipamentos-por-status', 'figure'),
+    [Input('interval-equipamentos', 'n_intervals'),
+     Input('refresh-btn-equip', 'n_clicks')]
+)
+def update_equipamentos_por_status(n, refresh_clicks):
+    df = execute_query(QUERIES['equipamentos_por_status'])
+    
+    if df.empty:
+        return go.Figure().add_annotation(
+            text="Sem dados disponíveis", 
+            showarrow=False,
+            font=dict(size=16, color='#6c757d')
+        )
+    
+    colors = ['#22c55e', '#6366f1', '#ef4444']  # Verde para alocado, azul para estoque, vermelho para não controlado
+    
+    fig = go.Figure(data=[go.Pie(
+        labels=df['Status'],
+        values=df['quantidade'],
+        hole=0.4,
+        marker=dict(
+            colors=colors[:len(df)],
+            line=dict(color='#ffffff', width=3)
+        ),
+        hovertemplate='<b>%{label}</b><br>Equipamentos: %{value}<br>Percentual: %{percent}<extra></extra>',
+        textposition='inside',
+        textinfo='percent+label'
+    )])
+    
+    fig.update_layout(
+        title=dict(
+            text='<b>Status dos Equipamentos</b>',
+            font=dict(size=18, color='#1e1e1e', family='Inter'),
+            x=0.5,
+            y=0.95
+        ),
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)',
+        font=dict(color='#1e1e1e', size=12, family='Inter'),
+        showlegend=True,
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=-0.1,
+            xanchor="center",
+            x=0.5,
+            font=dict(size=11)
+        ),
+        margin=dict(t=60, b=60, l=20, r=20),
+        height=400,
+        annotations=[
+            dict(
+                text="<b>Total<br>Equipamentos</b>",
+                x=0.5, y=0.5,
+                font_size=14,
+                font_color='#6c757d',
+                showarrow=False
+            )
+        ]
+    )
+    
+    return fig
+
+@app.callback(
+    Output('equipamentos-criticidade', 'figure'),
+    [Input('interval-equipamentos', 'n_intervals'),
+     Input('refresh-btn-equip', 'n_clicks')]
+)
+def update_equipamentos_criticidade(n, refresh_clicks):
+    df = calcular_criticidade_equipamentos()
+    
+    if df.empty:
+        return go.Figure().add_annotation(
+            text="Sem dados de idade disponíveis", 
+            showarrow=False,
+            font=dict(size=16, color='#6c757d')
+        )
+    
+    # Contar equipamentos por criticidade (Sem Dados já foi removido pela função calcular_criticidade_equipamentos)
+    criticidade_counts = df['Criticidade'].value_counts()
+    
+    # Definir cores por nível de criticidade
+    color_map = {
+        'Muito Crítico': '#dc3545',    # Vermelho escuro
+        'Crítico': '#fd7e14',          # Laranja
+        'Atenção': '#ffc107',          # Amarelo
+        'Moderado': '#20c997',         # Verde claro
+        'Bom Estado': '#28a745'        # Verde
+    }
+    
+    # Ordenar níveis de criticidade (removido "Sem Dados")
+    ordem_criticidade = ['Muito Crítico', 'Crítico', 'Atenção', 'Moderado', 'Bom Estado']
+    labels_ordenados = [c for c in ordem_criticidade if c in criticidade_counts.index]
+    values_ordenados = [criticidade_counts[c] for c in labels_ordenados]
+    colors_ordenados = [color_map[c] for c in labels_ordenados]
+    
+    fig = go.Figure(data=[go.Pie(
+        labels=labels_ordenados,
+        values=values_ordenados,
+        hole=0.4,
+        marker=dict(
+            colors=colors_ordenados,
+            line=dict(color='#ffffff', width=3)
+        ),
+        hovertemplate='<b>%{label}</b><br>Equipamentos: %{value}<br>Percentual: %{percent}<extra></extra>',
+        textposition='inside',
+        textinfo='percent+label'
+    )])
+    
+    fig.update_layout(
+        title=dict(
+            text='<b>Análise de Criticidade por Idade</b>',
+            font=dict(size=18, color='#1e1e1e', family='Inter'),
+            x=0.5,
+            y=0.95
+        ),
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)',
+        font=dict(color='#1e1e1e', size=12, family='Inter'),
+        showlegend=True,
+        legend=dict(
+            orientation="v",
+            yanchor="middle",
+            y=0.5,
+            xanchor="left",
+            x=1.05,
+            font=dict(size=10)
+        ),
+        margin=dict(t=60, b=40, l=40, r=150),
+        height=400,
+        annotations=[
+            dict(
+                text="<b>Total<br>Analisados</b>",
+                x=0.5, y=0.5,
+                font_size=14,
+                font_color='#6c757d',
+                showarrow=False
+            )
+        ]
+    )
+    
+    return fig
+
+@app.callback(
+    Output('equipamentos-criticos-table', 'children'),
+    [Input('interval-equipamentos', 'n_intervals'),
+     Input('refresh-btn-equip', 'n_clicks')]
+)
+def update_equipamentos_criticos_table(n, refresh_clicks):
+    df = calcular_criticidade_equipamentos()
+    
+    if df.empty:
+        return html.P("Sem dados de idade disponíveis", 
+                     style={'text-align': 'center', 'color': '#6c757d', 'fontStyle': 'italic'})
+    
+    # Filtrar apenas equipamentos críticos e muito críticos
+    df_criticos = df[df['Criticidade'].isin(['Muito Crítico', 'Crítico', 'Atenção'])].copy()
+    
+    # Ordenar por criticidade e idade
+    ordem_criticidade = ['Muito Crítico', 'Crítico', 'Atenção']
+    df_criticos['CriticidadeOrdem'] = df_criticos['Criticidade'].apply(lambda x: ordem_criticidade.index(x) if x in ordem_criticidade else 999)
+    df_criticos = df_criticos.sort_values(['CriticidadeOrdem', 'idade_anos'], ascending=[True, False])
+    
+    if df_criticos.empty:
+        return html.P("Nenhum equipamento crítico encontrado! 🎉", 
+                     style={'text-align': 'center', 'color': '#28a745', 'fontWeight': '600'})
+    
+    return dash_table.DataTable(
+        data=df_criticos.to_dict('records'),
+        columns=[
+            {"name": "Serial", "id": "Serial"},
+            {"name": "Modelo", "id": "Modelo"},
+            {"name": "Idade", "id": "IdadeFormatada"},
+            {"name": "Criticidade", "id": "Criticidade"},
+            {"name": "Status", "id": "Status"},
+            {"name": "Usuário", "id": "Usuario"},
+            {"name": "Colaborador", "id": "NomeColaborador"}
+        ],
+        style_table={
+            'overflowX': 'auto',
+            'maxWidth': '100%',
+            'borderRadius': '8px',
+            'overflow': 'hidden'
+        },
+        style_cell={
+            'textAlign': 'left',
+            'padding': '12px 16px',
+            'fontFamily': 'Segoe UI, sans-serif',
+            'fontSize': '0.875rem',
+            'whiteSpace': 'normal',
+            'height': 'auto',
+            'border': 'none',
+            'borderBottom': '1px solid #e9ecef'
+        },
+        style_header={
+            'backgroundColor': '#dc3545',
+            'color': 'white',
+            'fontWeight': '600',
+            'textTransform': 'uppercase',
+            'letterSpacing': '0.5px',
+            'fontSize': '0.8rem',
+            'border': 'none'
+        },
+        style_data={
+            'backgroundColor': '#ffffff',
+            'border': 'none'
+        },
+        style_data_conditional=[
+            {
+                'if': {'row_index': 'odd'},
+                'backgroundColor': '#f8f9fa'
+            },
+            {
+                'if': {'filter_query': '{Criticidade} = "Muito Crítico"'},
+                'backgroundColor': '#f8d7da',
+                'color': '#721c24',
+                'fontWeight': '600'
+            },
+            {
+                'if': {'filter_query': '{Criticidade} = "Crítico"'},
+                'backgroundColor': '#ffeaa7',
+                'color': '#856404',
+                'fontWeight': '600'
+            },
+            {
+                'if': {'filter_query': '{Criticidade} = "Atenção"'},
+                'backgroundColor': '#fff3cd',
+                'color': '#856404'
+            },
+            {
+                'if': {'state': 'active'},
+                'backgroundColor': 'rgba(99, 102, 241, 0.1)',
+                'border': '1px solid #6366f1'
+            }
+        ],
+        filter_action="native",
+        sort_action="native",
+        page_action="native",
+        page_current=0,
+        page_size=25
+    )
+
+@app.callback(
+    Output('equipamentos-por-modelo-full', 'figure'),
+    [Input('interval-equipamentos', 'n_intervals'),
+     Input('refresh-btn-equip', 'n_clicks')]
+)
+def update_equipamentos_por_modelo_full(n, refresh_clicks):
+    df = execute_query(QUERIES['computadores_por_modelo'])
+    
+    if df.empty:
+        return go.Figure().add_annotation(
+            text="Sem dados disponíveis", 
+            showarrow=False,
+            font=dict(size=16, color='#6c757d')
+        )
+    
+    df_top = df.head(15)
+    
+    colors = ['#6366f1', '#8b5cf6', '#ec4899', '#ef4444', '#f97316', '#eab308', '#22c55e', '#06b6d4', '#84cc16', '#f59e0b', '#8b5a2b', '#6b21a8', '#dc2626', '#059669', '#0284c7']
+    
+    fig = go.Figure(data=[
+        go.Bar(
+            y=df_top['Modelo'], 
+            x=df_top['quantidade'],
+            orientation='h',
+            marker=dict(
+                color=colors[:len(df_top)],
+                line=dict(color='rgba(255,255,255,0.8)', width=2)
+            ),
+            hovertemplate='<b>%{y}</b><br>Quantidade: %{x}<extra></extra>'
+        )
+    ])
+    
+    fig.update_layout(
+        title=dict(
+            text='<b>Top 15 Modelos de Equipamentos</b>',
+            font=dict(size=18, color='#1e1e1e', family='Inter'),
+            x=0.5,
+            y=0.95
+        ),
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)',
+        font=dict(color='#1e1e1e', size=12, family='Inter'),
+        showlegend=False,
+        margin=dict(t=60, b=60, l=200, r=40),
+        height=400,
+        xaxis=dict(
+            showgrid=True,
+            gridcolor='rgba(233,236,239,0.5)',
+            title=dict(text='<b>Quantidade</b>', font=dict(size=14)),
+            linecolor='#e9ecef'
+        ),
+        yaxis=dict(
+            showgrid=False,
+            title=dict(text='<b>Modelo</b>', font=dict(size=14)),
+            linecolor='#e9ecef',
+            tickfont=dict(size=9)
+        )
+    )
+    
+    return fig
+
+@app.callback(
+    Output('equipamentos-detalhado-table', 'children'),
+    [Input('interval-equipamentos', 'n_intervals'),
+     Input('refresh-btn-equip', 'n_clicks')]
+)
+def update_equipamentos_detalhado_table(n, refresh_clicks):
+    df = execute_query(QUERIES['equipamentos_detalhado'])
+    
+    if df.empty:
+        return html.P("Nenhum equipamento encontrado", 
+                     style={'text-align': 'center', 'color': '#6c757d', 'fontStyle': 'italic'})
+    
+    return dash_table.DataTable(
+        data=df.to_dict('records'),
+        columns=[
+            {"name": "Serial", "id": "Serial"},
+            {"name": "Modelo", "id": "Modelo"},
+            {"name": "Usuário", "id": "Usuario"},
+            {"name": "Matrícula", "id": "Matricula"},
+            {"name": "Colaborador", "id": "NomeColaborador"},
+            {"name": "Status", "id": "Status"}
+        ],
+        style_table={
+            'overflowX': 'auto',
+            'maxWidth': '100%',
+            'borderRadius': '8px',
+            'overflow': 'hidden'
+        },
+        style_cell={
+            'textAlign': 'left',
+            'padding': '12px 16px',
+            'fontFamily': 'Segoe UI, sans-serif',
+            'fontSize': '0.875rem',
+            'whiteSpace': 'normal',
+            'height': 'auto',
+            'border': 'none',
+            'borderBottom': '1px solid #e9ecef'
+        },
+        style_header={
+            'backgroundColor': '#1e1e1e',
+            'color': 'white',
+            'fontWeight': '600',
+            'textTransform': 'uppercase',
+            'letterSpacing': '0.5px',
+            'fontSize': '0.8rem',
+            'border': 'none'
+        },
+        style_data={
+            'backgroundColor': '#ffffff',
+            'border': 'none'
+        },
+        style_data_conditional=[
+            {
+                'if': {'row_index': 'odd'},
+                'backgroundColor': '#f8f9fa'
+            },
+            {
+                'if': {'filter_query': '{Status} = "Estoque"'},
+                'backgroundColor': '#cff4fc',
+                'color': '#055160'
+            },
+            {
+                'if': {'filter_query': '{Status} = "Alocado"'},
+                'backgroundColor': '#d1edff',
+                'color': '#0c5460'
+            },
+            {
+                'if': {'filter_query': '{Status} = "Não Controlado"'},
+                'backgroundColor': '#fff3cd',
+                'color': '#856404'
+            },
+            {
+                'if': {'state': 'active'},
+                'backgroundColor': 'rgba(99, 102, 241, 0.1)',
+                'border': '1px solid #6366f1'
+            }
+        ],
+        filter_action="native",
+        sort_action="native",
+        page_action="native",
+        page_current=0,
+        page_size=50
+    )
+
+@app.callback(
+    Output('connection-status', 'children'),
+    [Input('test-connection-btn', 'n_clicks')]
+)
+def test_connection(n_clicks):
+    if n_clicks is None:
+        return ""
+    
+    try:
+        engine = get_engine()
+        if engine:
+            test_df = pd.read_sql("SELECT 1 as test", engine)
+            return html.Div([
+                html.I(className="fas fa-check-circle", style={'color': '#22c55e', 'marginRight': '0.5rem'}),
+                "Conexão estabelecida com sucesso!"
+            ], style={'color': '#22c55e', 'fontWeight': '600'})
+        else:
+            return html.Div([
+                html.I(className="fas fa-times-circle", style={'color': '#ef4444', 'marginRight': '0.5rem'}),
+                "Erro na criação da engine"
+            ], style={'color': '#ef4444', 'fontWeight': '600'})
+    except Exception as e:
+        return html.Div([
+            html.I(className="fas fa-times-circle", style={'color': '#ef4444', 'marginRight': '0.5rem'}),
+            f"Erro na conexão: {str(e)}"
+        ], style={'color': '#ef4444', 'fontWeight': '600'})
+
+if __name__ == '__main__':
+    print("Testando conexão com banco de dados...")
+    engine = get_engine()
+    if engine:
+        try:
+            test_df = pd.read_sql("SELECT 1 as test", engine)
+            print("✓ Conexão estabelecida com sucesso!")
+        except Exception as e:
+            print(f"✗ Erro no teste de conexão: {e}")
+    else:
+        print("✗ Erro na criação da engine. Verifique as configurações em DB_CONFIG")
+
+# ==================== CALLBACKS PARA REDUÇÃO DE CUSTOS ====================
+
+@app.callback(
+    Output('timeline-reducao-chart', 'figure'),
+    [Input('refresh-btn-reducao', 'n_clicks'),
+     Input('interval-reducao-custos', 'n_intervals')]
+)
+def update_timeline_reducao_chart(refresh_clicks, n):
+    """Atualiza gráfico de evolução da redução de custos"""
+    df = load_desligamento_data()
+    if df is None:
+        return {}
+    
+    df['Data_Devolucao'] = df['Situação'].apply(extract_date_from_situation)
+    df['Status'] = df['Situação'].apply(lambda x: 'Devolvido' if 'Devolvido' in str(x) else 'Aguardando')
+    
+    devolvidos = df[df['Status'] == 'Devolvido'].copy()
+    
+    if devolvidos.empty or devolvidos['Data_Devolucao'].isna().all():
+        fig = go.Figure()
+        fig.add_annotation(
+            text="Nenhum item devolvido ainda<br>Aguardando primeiras devoluções para exibir evolução",
+            xref="paper", yref="paper",
+            x=0.5, y=0.5, showarrow=False,
+            font=dict(size=16, color="#666")
+        )
+        fig.update_layout(
+            plot_bgcolor='white',
+            paper_bgcolor='white',
+            height=400
+        )
+        return fig
+    
+    devolvidos = devolvidos.dropna(subset=['Data_Devolucao']).sort_values('Data_Devolucao')
+    devolvidos['Economia_Acumulada'] = devolvidos['Valor Economizado/mês'].cumsum()
+    devolvidos['Custo_Restante'] = VALOR_FIXO_MENSAL - devolvidos['Economia_Acumulada']
+
+    fig = go.Figure()
+
+    fig.add_trace(go.Scatter(
+        x=devolvidos['Data_Devolucao'],
+        y=devolvidos['Custo_Restante'],
+        mode='lines+markers',
+        name='Custo Atual',
+        line=dict(color='#000', width=3),
+        marker=dict(size=8, color='#000', line=dict(width=2, color='white')),
+        hovertemplate='<b>%{x}</b><br><b>%{y:,.0f}</b><extra></extra>'
+    ))
+
+    fig.update_layout(
+        title="Evolução da Redução de Custos",
+        xaxis_title="Data de Devolução",
+        yaxis_title="Custo Mensal (R$)",
+        plot_bgcolor='white',
+        paper_bgcolor='white',
+        height=400,
+        font=dict(size=12),
+        yaxis=dict(tickformat=',.0f', gridcolor='#f0f0f0'),
+        xaxis=dict(gridcolor='#f0f0f0')
+    )
+    
+    return fig
+
+@app.callback(
+    Output('status-reducao-pie-chart', 'figure'),
+    [Input('refresh-btn-reducao', 'n_clicks'),
+     Input('interval-reducao-custos', 'n_intervals')]
+)
+def update_status_reducao_pie(refresh_clicks, n):
+    """Atualiza gráfico de pizza dos status"""
+    df = load_desligamento_data()
+    if df is None:
+        return {}
+    
+    df['Status'] = df['Situação'].apply(lambda x: 'Devolvido' if 'Devolvido' in str(x) else 'Aguardando')
+    
+    qtd_devolvidos = len(df[df['Status'] == 'Devolvido'])
+    qtd_aguardando = len(df[df['Status'] == 'Aguardando'])
+    
+    fig = px.pie(
+        values=[qtd_devolvidos, qtd_aguardando],
+        names=['Devolvido', 'Aguardando'],
+        color_discrete_sequence=['#000', '#666']
+    )
+    
+    fig.update_traces(
+        textposition='inside',
+        textinfo='percent+label',
+        textfont_size=14,
+        textfont_color='white'
+    )
+    
+    fig.update_layout(
+        title="Distribuição dos Equipamentos",
+        plot_bgcolor='white',
+        paper_bgcolor='white',
+        height=400
+    )
+    
+    return fig
+
+@app.callback(
+    Output('tipo-reducao-bar-chart', 'figure'),
+    [Input('refresh-btn-reducao', 'n_clicks'),
+     Input('interval-reducao-custos', 'n_intervals')]
+)
+def update_tipo_reducao_bar(refresh_clicks, n):
+    """Atualiza gráfico de barras por tipo de equipamento"""
+    df = load_desligamento_data()
+    if df is None:
+        return {}
+    
+    economia_por_tipo = df.groupby('Devolução').agg({
+        'Valor Economizado/mês': 'sum',
+        'CT': 'count'
+    }).reset_index()
+    economia_por_tipo.columns = ['Tipo', 'Economia_Mensal', 'Quantidade']
+    economia_por_tipo = economia_por_tipo.sort_values('Economia_Mensal', ascending=True)
+    
+    fig = go.Figure()
+    
+    fig.add_trace(go.Bar(
+        y=economia_por_tipo['Tipo'],
+        x=economia_por_tipo['Economia_Mensal'],
+        orientation='h',
+        marker=dict(color='#000'),
+        text=[f'{q} un.' for q in economia_por_tipo['Quantidade']],
+        textposition='outside'
+    ))
+    
+    fig.update_layout(
+        title="Economia Mensal por Tipo de Equipamento",
+        xaxis_title="Economia Mensal (R$)",
+        yaxis_title="Tipo de Equipamento",
+        plot_bgcolor='white',
+        paper_bgcolor='white',
+        height=500,
+        margin=dict(l=150)
+    )
+    
+    return fig
+
+@app.callback(
+    Output('reducao-data-table', 'children'),
+    [Input('refresh-btn-reducao', 'n_clicks'),
+     Input('interval-reducao-custos', 'n_intervals')]
+)
+def update_reducao_data_table(refresh_clicks, n):
+    """Atualiza tabela detalhada de redução de custos"""
+    df = load_desligamento_data()
+    if df is None:
+        return html.Div("Dados não disponíveis")
+    
+    # Prepara dados para a tabela
+    df_display = df.copy()
+    df_display['Economia Mensal'] = df_display['Valor Economizado/mês'].apply(format_currency)
+    df_display['Economia Anual'] = df_display['Valor Economizado/ano'].apply(format_currency)
+    df_display['Status'] = df_display['Situação'].apply(lambda x: 'Devolvido' if 'Devolvido' in str(x) else 'Aguardando')
+    
+    columns_to_show = ['CT', 'Devolução', 'Economia Mensal', 'Economia Anual', 'Status']
+    df_display = df_display[columns_to_show]
+    df_display.columns = ['CT', 'Tipo', 'Economia/Mês', 'Economia/Ano', 'Status']
+    
+    table = dash_table.DataTable(
+        data=df_display.to_dict('records'),
+        columns=[{"name": col, "id": col} for col in df_display.columns],
+        style_table={'overflowX': 'auto'},
+        style_cell={
+            'textAlign': 'left',
+            'padding': '12px',
+            'fontFamily': 'Segoe UI',
+            'fontSize': '14px'
+        },
+        style_header={
+            'backgroundColor': '#000',
+            'color': 'white',
+            'fontWeight': '600'
+        },
+        style_data_conditional=[
+            {
+                'if': {'filter_query': '{Status} = Devolvido'},
+                'backgroundColor': '#f9f9f9'
+            }
+        ],
+        page_size=10
+    )
+    
+    return table
+
+@app.callback(
+    Output('current-time-reducao', 'children'),
+    [Input('interval-reducao-custos', 'n_intervals')]
+)
+def update_time_reducao(n):
+    """Atualiza horário na aba de redução de custos"""
+    return datetime.now().strftime('%d/%m/%Y %H:%M:%S')
+
+if __name__ == '__main__':
+    app.run(debug=False, host='0.0.0.0', port=8050)
