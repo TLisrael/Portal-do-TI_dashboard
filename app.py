@@ -193,10 +193,9 @@ QUERIES = {
     """,
     
     'kpi_equipamentos_sem_dono': """
-        SELECT COUNT(*) as total_equipamentos_sem_dono
+        SELECT COUNT(*) as total_equipamentos_descartados
         FROM Computadores
-        WHERE Matricula IS NULL
-          AND (Usuario IS NULL OR Usuario NOT LIKE '%estoque%')
+        WHERE Status IN (4, 6, 8, 9)  -- Extraviado, Roubado, Descartado, Danificado
     """,
     
     'kpi_colaboradores_ativos_sem_computador': """
@@ -311,7 +310,7 @@ QUERIES = {
             CASE 
                 WHEN c.Usuario LIKE '%estoque%' THEN 'Estoque'
                 WHEN c.Matricula IS NOT NULL THEN 'Alocado'
-                ELSE 'Não Controlado'
+                ELSE 'Descartado'
             END as Status
         FROM Computadores c
         LEFT JOIN Colaboradores col ON col.Matricula = c.Matricula
@@ -339,17 +338,29 @@ QUERIES = {
     'equipamentos_por_status': """
         SELECT 
             CASE 
-                WHEN c.Usuario LIKE '%estoque%' THEN 'Estoque'
+                WHEN UPPER(COALESCE(c.Usuario, 'SEM STATUS')) = 'EM ESTOQUE' THEN 'Em Estoque'
+                WHEN UPPER(COALESCE(c.Usuario, 'SEM STATUS')) = 'ACESSO REMOTO' THEN 'Acesso Remoto' 
+                WHEN UPPER(COALESCE(c.Usuario, 'SEM STATUS')) = 'DESCARTADO' THEN 'Descartado'
+                WHEN UPPER(COALESCE(c.Usuario, 'SEM STATUS')) = 'DEVOLVIDO' THEN 'Devolvido'
+                WHEN UPPER(COALESCE(c.Usuario, 'SEM STATUS')) = 'DANIFICADO' THEN 'Danificado'
+                WHEN UPPER(COALESCE(c.Usuario, 'SEM STATUS')) = 'EXTRAVIADO' THEN 'Extraviado'
+                WHEN UPPER(COALESCE(c.Usuario, 'SEM STATUS')) = 'ROUBADO' THEN 'Roubado'
                 WHEN c.Matricula IS NOT NULL THEN 'Alocado'
-                ELSE 'Não Controlado'
+                ELSE 'Sem Status'
             END as Status,
             COUNT(*) as quantidade
         FROM Computadores c
         GROUP BY 
             CASE 
-                WHEN c.Usuario LIKE '%estoque%' THEN 'Estoque'
+                WHEN UPPER(COALESCE(c.Usuario, 'SEM STATUS')) = 'EM ESTOQUE' THEN 'Em Estoque'
+                WHEN UPPER(COALESCE(c.Usuario, 'SEM STATUS')) = 'ACESSO REMOTO' THEN 'Acesso Remoto'
+                WHEN UPPER(COALESCE(c.Usuario, 'SEM STATUS')) = 'DESCARTADO' THEN 'Descartado'
+                WHEN UPPER(COALESCE(c.Usuario, 'SEM STATUS')) = 'DEVOLVIDO' THEN 'Devolvido'
+                WHEN UPPER(COALESCE(c.Usuario, 'SEM STATUS')) = 'DANIFICADO' THEN 'Danificado'
+                WHEN UPPER(COALESCE(c.Usuario, 'SEM STATUS')) = 'EXTRAVIADO' THEN 'Extraviado'
+                WHEN UPPER(COALESCE(c.Usuario, 'SEM STATUS')) = 'ROUBADO' THEN 'Roubado'
                 WHEN c.Matricula IS NOT NULL THEN 'Alocado'
-                ELSE 'Não Controlado'
+                ELSE 'Sem Status'
             END
         ORDER BY quantidade DESC
     """,
@@ -364,12 +375,181 @@ QUERIES = {
             CASE 
                 WHEN c.Usuario LIKE '%estoque%' THEN 'Estoque'
                 WHEN c.Matricula IS NOT NULL THEN 'Alocado'
-                ELSE 'Não Controlado'
+                ELSE 'Descartado'
             END as Status
         FROM Computadores c
         LEFT JOIN Colaboradores col ON col.Matricula = c.Matricula
         WHERE c.Serial IS NOT NULL
         ORDER BY c.Modelo, c.Serial
+    """,
+    
+    # Novas queries para análises mais avançadas
+    'custos_por_setor': """
+        SELECT 
+            COALESCE(col.CCusto, 'Sem Setor') as Setor,
+            COUNT(DISTINCT c.Serial) as QuantidadeEquipamentos,
+            COUNT(DISTINCT col.Matricula) as QuantidadeColaboradores,
+            CASE 
+                WHEN COUNT(DISTINCT col.Matricula) > 0 
+                THEN ROUND(CAST(COUNT(DISTINCT c.Serial) AS FLOAT) / COUNT(DISTINCT col.Matricula), 2)
+                ELSE 0 
+            END as EquipamentoPorColaborador
+        FROM Colaboradores col
+        LEFT JOIN Computadores c ON c.Matricula = col.Matricula
+        WHERE col.Situacao = 'Ativo'
+        GROUP BY col.CCusto
+        ORDER BY QuantidadeEquipamentos DESC
+    """,
+    
+    'rotatividade_analise': """
+        SELECT 
+            YEAR(GETDATE()) as Ano,
+            COUNT(CASE WHEN Situacao = 'Demitido' THEN 1 END) as Demitidos,
+            COUNT(CASE WHEN Situacao = 'Aviso Prévio' THEN 1 END) as AvisoPrevio,
+            COUNT(CASE WHEN Situacao = 'Ativo' THEN 1 END) as Ativos,
+            ROUND(
+                (COUNT(CASE WHEN Situacao IN ('Demitido', 'Aviso Prévio') THEN 1 END) * 100.0) / 
+                NULLIF(COUNT(*), 0), 2
+            ) as TaxaRotatividade
+        FROM Colaboradores
+    """,
+    
+    'equipamentos_idade_critica': """
+        SELECT 
+            c.Serial,
+            c.Modelo,
+            COALESCE(col.Nome, 'Não Alocado') as Usuario,
+            COALESCE(col.CCusto, 'Sem Setor') as Setor,
+            NULL as IdadeAnos,
+            'Sem Data de Compra' as StatusIdade
+        FROM Computadores c
+        LEFT JOIN Colaboradores col ON col.Matricula = c.Matricula
+        WHERE c.Serial IS NOT NULL
+        ORDER BY c.Modelo, c.Serial
+    """,
+    
+    'performance_mensal': """
+        SELECT 
+            FORMAT(GETDATE(), 'yyyy-MM') as MesAtual,
+            COUNT(CASE WHEN c.Situacao = 'Ativo' THEN 1 END) as ColaboradoresAtivos,
+            COUNT(DISTINCT comp.Serial) as EquipamentosAlocados,
+            COUNT(CASE WHEN comp.Usuario LIKE '%estoque%' THEN 1 END) as EquipamentosEstoque,
+            COUNT(CASE WHEN comp.Matricula IS NULL AND (comp.Usuario IS NULL OR comp.Usuario NOT LIKE '%estoque%') THEN 1 END) as EquipamentosSemDono
+        FROM Colaboradores c
+        FULL OUTER JOIN Computadores comp ON comp.Matricula = c.Matricula
+    """,
+    
+    'alertas_sistema': """
+        SELECT 
+            'Colaboradores Demitidos com Equipamentos' as TipoAlerta,
+            COUNT(DISTINCT c.Matricula) as Quantidade,
+            'Alto' as Prioridade
+        FROM Colaboradores c 
+        LEFT JOIN Computadores comp ON comp.Matricula = c.Matricula 
+        WHERE c.Situacao = 'Demitido' AND comp.ID IS NOT NULL
+        
+        UNION ALL
+        
+        SELECT 
+            'Equipamentos Descartados/Danificados' as TipoAlerta,
+            COUNT(*) as Quantidade,
+            'Médio' as Prioridade
+        FROM Computadores 
+        WHERE Status IN (4, 6, 8, 9)  -- Extraviado, Roubado, Descartado, Danificado
+        
+        UNION ALL
+        
+        SELECT 
+            'Colaboradores Ativos Sem Equipamento' as TipoAlerta,
+            COUNT(*) as Quantidade,
+            'Baixo' as Prioridade
+        FROM Colaboradores c
+        LEFT JOIN Computadores comp ON comp.Matricula = c.Matricula
+        WHERE c.Situacao = 'Ativo' AND comp.Matricula IS NULL
+    """,
+    
+    'equipamentos_por_status_real': """
+        SELECT 
+            c.Status as StatusNumerico,
+            CASE 
+                WHEN c.Status = 1 THEN 'Em Estoque'
+                WHEN c.Status = 2 THEN 'Acesso Remoto'
+                WHEN c.Status = 3 THEN 'Em Uso'
+                WHEN c.Status = 4 THEN 'Extraviado'
+                WHEN c.Status = 5 THEN 'Reparo'
+                WHEN c.Status = 6 THEN 'Roubado'
+                WHEN c.Status = 7 THEN 'Devolvido'
+                WHEN c.Status = 8 THEN 'Descartado'
+                WHEN c.Status = 9 THEN 'Danificado'
+                ELSE 'Status Indefinido'
+            END as Status,
+            COUNT(*) as Quantidade,
+            ROUND((COUNT(*) * 100.0) / (SELECT COUNT(*) FROM Computadores), 2) as Percentual
+        FROM Computadores c
+        WHERE c.Status IS NOT NULL
+        GROUP BY c.Status
+        ORDER BY c.Status
+    """,
+    
+    'equipamentos_detalhado_status': """
+        SELECT 
+            c.Serial,
+            c.Modelo,
+            c.Status as StatusNumerico,
+            CASE 
+                WHEN c.Status = 1 THEN 'Em Estoque'
+                WHEN c.Status = 2 THEN 'Acesso Remoto'
+                WHEN c.Status = 3 THEN 'Em Uso'
+                WHEN c.Status = 4 THEN 'Extraviado'
+                WHEN c.Status = 5 THEN 'Reparo'
+                WHEN c.Status = 6 THEN 'Roubado'
+                WHEN c.Status = 7 THEN 'Devolvido'
+                WHEN c.Status = 8 THEN 'Descartado'
+                WHEN c.Status = 9 THEN 'Danificado'
+                ELSE 'Status Indefinido'
+            END as StatusRealizado,
+            COALESCE(c.Usuario, 'Sem Usuário') as Usuario,
+            COALESCE(c.Matricula, 'Sem Matrícula') as Matricula,
+            COALESCE(col.Nome, 'Não Alocado') as NomeColaborador,
+            COALESCE(col.CCusto, 'Sem Setor') as Setor
+        FROM Computadores c
+        LEFT JOIN Colaboradores col ON col.Matricula = c.Matricula
+        WHERE c.Serial IS NOT NULL
+        ORDER BY c.Status, c.Modelo, c.Serial
+    """,
+    
+    'equipamentos_criticos_por_status': """
+        SELECT 
+            CASE 
+                WHEN c.Status = 8 THEN 'Descartado'
+                WHEN c.Status = 9 THEN 'Danificado'
+                WHEN c.Status = 4 THEN 'Extraviado'
+                WHEN c.Status = 6 THEN 'Roubado'
+                ELSE 'Outros'
+            END as StatusCritico,
+            COUNT(*) as Quantidade,
+            NULL as IdadeMedia
+        FROM Computadores c
+        WHERE c.Status IN (4, 6, 8, 9)  -- Extraviado, Roubado, Descartado, Danificado
+        GROUP BY 
+            CASE 
+                WHEN c.Status = 8 THEN 'Descartado'
+                WHEN c.Status = 9 THEN 'Danificado'
+                WHEN c.Status = 4 THEN 'Extraviado'
+                WHEN c.Status = 6 THEN 'Roubado'
+                ELSE 'Outros'
+            END
+        ORDER BY Quantidade DESC
+    """,
+    
+    # Query de diagnóstico simples para ver distribuição por status
+    'diagnostico_status_simples': """
+        SELECT 
+            Status,
+            COUNT(*) as Quantidade
+        FROM Computadores
+        GROUP BY Status
+        ORDER BY Status
     """
 }
 
@@ -436,6 +616,27 @@ def format_currency(value):
     """Formata valor como moeda brasileira"""
     return f"R$ {value:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
 
+def create_alert_card(title, count, priority, icon):
+    """Cria card de alerta"""
+    color_map = {
+        'Alto': '#dc3545',
+        'Médio': '#ffc107', 
+        'Baixo': '#28a745'
+    }
+    
+    return html.Div([
+        html.Div([
+            html.I(className=f"{icon} alert-icon"),
+            html.Div([
+                html.H4(str(count), className="alert-count"),
+                html.P(title, className="alert-title"),
+                html.Span(f"Prioridade {priority}", className="alert-priority")
+            ], className="alert-content")
+        ], className="alert-inner")
+    ], className="alert-card", style={
+        'border-left': f'4px solid {color_map.get(priority, "#6c757d")}'
+    })
+
 # Valor fixo atual
 VALOR_FIXO_MENSAL = 102359.03
 VALOR_FIXO_ANUAL = VALOR_FIXO_MENSAL * 12
@@ -454,6 +655,7 @@ app.index_string = '''
         {%favicon%}
         {%css%}
         <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
         <style>
             * {
               margin: 0;
@@ -462,11 +664,12 @@ app.index_string = '''
             }
             
             body {
-              font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, 'Helvetica Neue', Arial, sans-serif;
+              font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
               background: #f8f9fa;
               color: #1e1e1e;
               line-height: 1.6;
               overflow-x: hidden;
+              font-weight: 400;
             }
             
             .dashboard-container {
@@ -529,7 +732,7 @@ app.index_string = '''
             .nav-item:hover, .nav-item.active {
               background: linear-gradient(90deg, rgba(255,255,255,0.1) 0%, transparent 100%);
               color: white;
-              border-left-color: #00d4aa;
+              border-left-color: #FFFFFF;
               transform: translateX(5px);
             }
             
@@ -544,6 +747,64 @@ app.index_string = '''
               font-size: 1.1rem;
             }
             
+            #nav-reducao-custos.active {
+              color: white !important;
+            }
+            
+            .alert-card {
+              background: white;
+              border-radius: 8px;
+              padding: 1rem;
+              margin: 0.5rem;
+              box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+              border: 1px solid #e9ecef;
+              transition: transform 0.2s;
+            }
+            
+            .alert-card:hover {
+              transform: translateY(-2px);
+              box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            }
+            
+            .alert-inner {
+              display: flex;
+              align-items: center;
+            }
+            
+            .alert-icon {
+              font-size: 2rem;
+              margin-right: 1rem;
+              color: #6c757d;
+            }
+            
+            .alert-count {
+              font-size: 1.5rem;
+              font-weight: 700;
+              margin: 0;
+              color: #1e1e1e;
+            }
+            
+            .alert-title {
+              font-size: 0.9rem;
+              margin: 0;
+              color: #6c757d;
+            }
+            
+            .alert-priority {
+              font-size: 0.8rem;
+              padding: 0.2rem 0.5rem;
+              border-radius: 4px;
+              background: #f8f9fa;
+              color: #495057;
+            }
+            
+            .alerts-grid {
+              display: grid;
+              grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+              gap: 1rem;
+              margin: 2rem 0;
+            }
+            
             .main-content {
               margin-left: 260px;
               padding: 2.5rem;
@@ -553,32 +814,24 @@ app.index_string = '''
             }
             
             .kpi-grid {
-              display: flex !important;
-              flex-wrap: wrap !important;
-              gap: 1.5rem !important;
+              display: grid !important;
+              grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)) !important;
+              gap: 2rem !important;
               margin-bottom: 3rem !important;
               width: 100% !important;
-              flex-direction: row !important;
+              padding: 0 1rem !important;
             }
             
             .kpi-card {
               background: white;
               border-radius: 12px;
-              padding: 1.5rem;
+              padding: 2rem;
               box-shadow: 0 8px 25px rgba(0,0,0,0.08);
               border: 1px solid #e9ecef;
+              background: linear-gradient(145deg, #ffffff 0%, #f8f9fa 100%);
               position: relative;
               transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
               overflow: hidden;
-              flex: 1 1 280px !important;
-              min-width: 280px !important;
-              max-width: 320px !important;
-              display: inline-block !important;
-            }
-            
-            .kpi-card:hover {
-              transform: translateY(-2px);
-              box-shadow: 0 12px 35px rgba(0,0,0,0.12);
             }
             
             .kpi-card::before {
@@ -587,8 +840,14 @@ app.index_string = '''
               top: 0;
               left: 0;
               right: 0;
-              height: 5px;
-              background: linear-gradient(90deg, #ff6b6b 0%, #4ecdc4 50%, #45b7d1 100%);
+              height: 4px;
+              background: linear-gradient(90deg, #000000 0%, #333333 25%, #666666 50%, #999999 75%, #cccccc 100%);
+              z-index: 1;
+            }
+            
+            .kpi-card:hover {
+              transform: translateY(-3px);
+              box-shadow: 0 15px 40px rgba(0,0,0,0.15);
             }
             
             .kpi-card::after {
@@ -604,25 +863,27 @@ app.index_string = '''
             }
             
             .kpi-value {
-              font-size: 2.2rem;
-              font-weight: 900;
+              font-size: 2.4rem;
+              font-weight: 600;
               color: #1e1e1e;
               margin-bottom: 0.5rem;
               position: relative;
-              z-index: 1;
-              letter-spacing: -1px;
-              line-height: 1;
+              z-index: 2;
+              letter-spacing: -0.5px;
+              line-height: 1.1;
+              font-family: 'Inter', sans-serif;
             }
             
             .kpi-label {
               color: #6c757d;
-              font-size: 0.85rem;
-              font-weight: 600;
+              font-size: 0.9rem;
+              font-weight: 500;
               position: relative;
-              z-index: 1;
-              text-transform: uppercase;
-              letter-spacing: 0.5px;
-              line-height: 1.2;
+              z-index: 2;
+              text-transform: none;
+              letter-spacing: 0.2px;
+              line-height: 1.3;
+              font-family: 'Inter', sans-serif;
             }
             
             .chart-card {
@@ -637,6 +898,38 @@ app.index_string = '''
             
             .chart-card:hover {
               box-shadow: 0 12px 35px rgba(0,0,0,0.12);
+            }
+            
+            .chart-card-black {
+              background: linear-gradient(145deg, #1e1e1e 0%, #0f0f0f 100%);
+              border-radius: 16px;
+              padding: 2.5rem;
+              box-shadow: 0 8px 25px rgba(0,0,0,0.3);
+              border: 1px solid #333;
+              margin-bottom: 2.5rem;
+              transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+              color: white;
+            }
+            
+            .chart-card-black:hover {
+              box-shadow: 0 12px 35px rgba(0,0,0,0.5);
+              transform: translateY(-2px);
+            }
+            
+            .chart-card-black h4,
+            .chart-card-black h5 {
+              color: white !important;
+            }
+            
+            .chart-card-black .plotly {
+              background: transparent !important;
+            }
+            
+            .status-card-white {
+              background: white !important;
+              border: 2px solid #000000 !important;
+              border-radius: 8px !important;
+              box-shadow: 0 2px 8px rgba(0,0,0,0.1) !important;
             }
             
             .header {
@@ -879,6 +1172,12 @@ def create_equipamentos_content():
         ], style={'marginBottom': '2rem'}),
         
         html.Div([
+            html.Div([
+                dcc.Graph(id="custos-por-setor")
+            ], className="chart-card", style={'width': '100%'})
+        ], style={'marginBottom': '2rem'}),
+        
+        html.Div([
             html.H3("📋 Análise Detalhada", style={
                 'color': '#1e1e1e', 
                 'marginBottom': '1rem', 
@@ -897,6 +1196,59 @@ def create_equipamentos_content():
                 }),
                 html.Div(id="equipamentos-criticos-table", style={
                     'maxHeight': '400px', 
+                    'overflowY': 'auto',
+                    'border': '1px solid #e9ecef',
+                    'borderRadius': '8px'
+                })
+            ], className="chart-card", style={'width': '100%', 'marginBottom': '2rem'})
+        ]),
+        
+        # Nova seção para análise de equipamentos por status
+        html.Div([
+            html.Div([
+                html.H4("� Análise de Equipamentos por Status", style={
+                    'margin-bottom': '1.5rem',
+                    'color': '#1e1e1e',
+                    'fontWeight': '600',
+                    'fontSize': '1.1rem'
+                }),
+                html.Div([
+                    html.Div([
+                        dcc.Graph(id="equipamentos-status-chart")
+                    ], style={'width': '40%', 'display': 'inline-block', 'verticalAlign': 'top'}),
+                    
+                    html.Div([
+                        html.H5("Resumo por Status:", style={'margin-bottom': '1rem', 'color': '#1e1e1e'}),
+                        html.Div(id="equipamentos-status-resumo")
+                    ], style={'width': '60%', 'display': 'inline-block', 'paddingLeft': '2rem', 'verticalAlign': 'top'})
+                ])
+            ], className="chart-card", style={'width': '100%', 'marginBottom': '2rem'})
+        ]),
+        
+        html.Div([
+            html.Div([
+                html.H4("� Equipamentos Críticos (Descartados/Danificados)", style={
+                    'margin-bottom': '1.5rem',
+                    'color': '#1e1e1e',
+                    'fontWeight': '600',
+                    'fontSize': '1.1rem'
+                }),
+                html.Div([
+                    dcc.Graph(id="equipamentos-criticos-status-chart")
+                ], style={'width': '100%'})
+            ], className="chart-card", style={'width': '100%', 'marginBottom': '2rem'})
+        ]),
+        
+        html.Div([
+            html.Div([
+                html.H4("�📋 Lista Detalhada - Todos os Equipamentos por Status", style={
+                    'margin-bottom': '1.5rem',
+                    'color': '#1e1e1e',
+                    'fontWeight': '600',
+                    'fontSize': '1.1rem'
+                }),
+                html.Div(id="equipamentos-status-table", style={
+                    'maxHeight': '600px', 
                     'overflowY': 'auto',
                     'border': '1px solid #e9ecef',
                     'borderRadius': '8px'
@@ -964,8 +1316,21 @@ def create_config_content():
                 }),
                 html.P("Versão: 2.0", style={'marginBottom': '0.5rem'}),
                 html.P("Última atualização: Setembro 2025", style={'marginBottom': '0.5rem'}),
-                html.P("Atualização automática: 5 minutos", style={'marginBottom': '0.5rem'}),
-                html.P("Desenvolvido com: Python Dash + Plotly", style={'marginBottom': '1rem'}),
+                html.P("Atualização automática: 5 minutos", style={'marginBottom': '1rem'}),
+                html.Div([
+                    html.P("Powered by Wood", style={
+                        'marginBottom': '0.5rem',
+                        'fontWeight': '600',
+                        'color': '#333',
+                        'fontSize': '1.1rem'
+                    })
+                ], style={
+                    'background': 'linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%)',
+                    'padding': '1rem',
+                    'borderRadius': '8px',
+                    'textAlign': 'center',
+                    'border': '1px solid #dee2e6'
+                }),
                 html.Div(id="connection-status", style={'marginTop': '1rem'})
             ], className="chart-card", style={'width': '48%', 'display': 'inline-block', 'marginLeft': '2%'})
         ])
@@ -1113,6 +1478,17 @@ def create_dashboard_content():
         # KPIs Grid
         html.Div(id="kpi-cards", className="kpi-grid"),
         
+        # Seção de Alertas e Performance
+        html.Div([
+            html.H3("🚨 Central de Alertas", style={
+                'color': '#1e1e1e', 
+                'marginBottom': '1rem', 
+                'fontWeight': '800',
+                'fontSize': '1.3rem'
+            }),
+            html.Div(id="alerts-section", className="alerts-grid")
+        ], style={'marginBottom': '2rem'}),
+        
         # Charts Grid - 2 columns
         html.Div([
             html.Div([
@@ -1165,23 +1541,6 @@ def create_dashboard_content():
                 }),
                 html.Div(id="demitidos-equipamentos-table")
             ], className="chart-card", style={'width': '48%', 'display': 'inline-block', 'marginLeft': '2%'})
-        ]),
-        
-        html.Div([
-            html.Div([
-                html.H4("✅ Colaboradores Ativos c/ Equipamentos", style={
-                    'margin-bottom': '1.5rem',
-                    'color': '#1e1e1e',
-                    'fontWeight': '600',
-                    'fontSize': '1.1rem'
-                }),
-                html.Div(id="colaboradores-ativos-table", style={
-                    'maxHeight': '500px', 
-                    'overflowY': 'auto',
-                    'border': '1px solid #e9ecef',
-                    'borderRadius': '8px'
-                })
-            ], className="chart-card")
         ]),
         
         dcc.Interval(
@@ -1291,24 +1650,8 @@ def update_kpis(n, refresh_clicks):
     demitidos_com_equipamentos = df_demitidos_equip.iloc[0]['total_demitidos_com_equipamentos'] if not df_demitidos_equip.empty else 0
     df_demitidos_equip_detail = execute_query(QUERIES['colaboradores_demitidos_com_equipamentos'])
     
-    df_colab_ativos_equip = execute_query(QUERIES['kpi_colaboradores_ativos_com_equipamentos'])
-    colaboradores_ativos_equipamentos = df_colab_ativos_equip.iloc[0]['total_colaboradores_ativos_com_equipamentos'] if not df_colab_ativos_equip.empty else 0
-    
     df_equip_sem_dono = execute_query(QUERIES['kpi_equipamentos_sem_dono'])
-    equipamentos_sem_dono = df_equip_sem_dono.iloc[0]['total_equipamentos_sem_dono'] if not df_equip_sem_dono.empty else 0
-    
-    df_ativos_sem_pc = execute_query(QUERIES['kpi_colaboradores_ativos_sem_computador'])
-    colaboradores_ativos_sem_pc = df_ativos_sem_pc.iloc[0]['total_colaboradores_ativos_sem_computador'] if not df_ativos_sem_pc.empty else 0
-    
-    df_estoque_total = execute_query(QUERIES['total_equipamentos_estoque'])
-    total_estoque = df_estoque_total.iloc[0]['TotalEmEstoque'] if not df_estoque_total.empty and df_estoque_total.iloc[0]['TotalEmEstoque'] is not None else 0
-    
-    df_equip_alocados = execute_query(QUERIES['kpi_equipamentos_alocados'])
-    equipamentos_alocados = df_equip_alocados.iloc[0]['total_equipamentos_alocados'] if not df_equip_alocados.empty else 0
-    taxa_alocacao = 0
-    if (equipamentos_alocados or 0) + (total_estoque or 0) > 0:
-        total_computadores_calc = equipamentos_alocados + total_estoque
-        taxa_alocacao = round((equipamentos_alocados / total_computadores_calc) * 100, 1)
+    equipamentos_descartados = df_equip_sem_dono.iloc[0]['total_equipamentos_descartados'] if not df_equip_sem_dono.empty else 0
     
     idade_path = os.path.join(os.path.dirname(__file__), 'idade_computadores.xlsx')
     media_idade_anos = None
@@ -1371,10 +1714,7 @@ def update_kpis(n, refresh_clicks):
     card_terc_ativos = create_kpi_card("Terceirizados Ativos", terceirizados_ativos, "fas fa-user-check", "Com equipamentos")
     card_demitidos = create_kpi_card("Colaboradores Demitidos", colaboradores_demitidos, "fas fa-user-slash", f"{demitidos_com_equipamentos} com equipamentos")
     card_aviso_wrapped = html.Div(create_kpi_card("Aviso Prévio", colaboradores_aviso_previo, "fas fa-clock", "Colaboradores"), id='kpi-aviso')
-    card_colab_ativos = create_kpi_card("Colaboradores c/ Equipamentos", colaboradores_ativos_equipamentos, "fas fa-users", "Ativos com equipamentos")
-    card_equip_nao_controlados = create_kpi_card("Equipamentos não controlados", equipamentos_sem_dono, "fas fa-exclamation-triangle", "Sem controle administrativo")
-    card_ativos_sem_pc = create_kpi_card("Ativos sem computador", colaboradores_ativos_sem_pc, "fas fa-user", "Colaboradores ativos")
-    card_taxa_aloc = create_kpi_card("Taxa de alocação", f"{taxa_alocacao}%", "fas fa-chart-line", "Equip. alocados / total")
+    card_equip_nao_controlados = create_kpi_card("Equipamentos Críticos", equipamentos_descartados, "fas fa-exclamation-triangle", "Descartados/Danificados/Extraviados")
     card_media_idade = create_kpi_card("Média idade PCs", media_idade_anos if media_idade_anos is not None else '-', "fas fa-hourglass-half", "Anos")
 
     df_aviso_detail = execute_query(QUERIES['colaboradores_aviso_previo'])
@@ -1400,10 +1740,7 @@ def update_kpis(n, refresh_clicks):
         card_terc_ativos,
         card_demitidos,
         card_aviso_wrapped,
-        card_colab_ativos,
         card_equip_nao_controlados,
-        card_ativos_sem_pc,
-        card_taxa_aloc,
         card_media_idade,
         
         popover_aviso
@@ -1743,70 +2080,6 @@ def update_terceirizados_inativos_table(n, refresh_clicks):
             {"name": "Nome", "id": "Nome"},
             {"name": "Matrícula", "id": "Matricula_Terc"},
             {"name": "Chefia", "id": "Chefia"}
-        ],
-        style_table={
-            'overflowX': 'auto',
-            'maxWidth': '100%',
-            'borderRadius': '8px',
-            'overflow': 'hidden'
-        },
-        style_cell={
-            'textAlign': 'left',
-            'padding': '12px 16px',
-            'fontFamily': 'Segoe UI, sans-serif',
-            'fontSize': '0.875rem',
-            'whiteSpace': 'normal',
-            'height': 'auto',
-            'border': 'none',
-            'borderBottom': '1px solid #e9ecef'
-        },
-        style_header={
-            'backgroundColor': '#1e1e1e',
-            'color': 'white',
-            'fontWeight': '600',
-            'textTransform': 'uppercase',
-            'letterSpacing': '0.5px',
-            'fontSize': '0.8rem',
-            'border': 'none'
-        },
-        style_data={
-            'backgroundColor': '#ffffff',
-            'border': 'none'
-        },
-        style_data_conditional=[
-            {
-                'if': {'row_index': 'odd'},
-                'backgroundColor': '#f8f9fa'
-            },
-            {
-                'if': {'state': 'active'},
-                'backgroundColor': 'rgba(99, 102, 241, 0.1)',
-                'border': '1px solid #6366f1'
-            }
-        ]
-    )
-
-@app.callback(
-    Output('colaboradores-ativos-table', 'children'),
-    [Input('interval-component', 'n_intervals'),
-     Input('refresh-btn', 'n_clicks')]
-)
-def update_colaboradores_ativos_table(n, refresh_clicks):
-    df = execute_query(QUERIES['colaboradores_ativos_com_equipamentos'])
-    
-    if df.empty:
-        return html.P("Nenhum colaborador ativo com equipamentos", 
-                     style={'text-align': 'center', 'color': '#6c757d', 'fontStyle': 'italic'})
-    
-    df_top = df.head(10000)
-    
-    return dash_table.DataTable(
-        data=df_top.to_dict('records'),
-        columns=[
-            {"name": "Serial", "id": "Serial"},
-            {"name": "Modelo", "id": "Modelo"},
-            {"name": "Matrícula", "id": "Matricula"},
-            {"name": "Nome", "id": "Nome"}
         ],
         style_table={
             'overflowX': 'auto',
@@ -2216,8 +2489,8 @@ def calcular_criticidade_equipamentos():
         # Melhorar informações de status
         def formatar_status(row):
             status = row.get('Status', '')
-            if status == 'Não Controlado':
-                return 'Equipamento Não Controlado'
+            if status == 'Descartado':
+                return 'Equipamento Descartado'
             elif status == 'Estoque':
                 return 'Reserva/Backup (Estoque)'
             else:
@@ -2272,7 +2545,7 @@ def update_equipamentos_por_status(n, refresh_clicks):
             font=dict(size=16, color='#6c757d')
         )
     
-    colors = ['#22c55e', '#6366f1', '#ef4444']  # Verde para alocado, azul para estoque, vermelho para não controlado
+    colors = ['#22c55e', '#6366f1', '#ef4444']  # Verde para alocado, azul para estoque, vermelho para Descartado
     
     fig = go.Figure(data=[go.Pie(
         labels=df['Status'],
@@ -2628,7 +2901,7 @@ def update_equipamentos_detalhado_table(n, refresh_clicks):
                 'color': '#0c5460'
             },
             {
-                'if': {'filter_query': '{Status} = "Não Controlado"'},
+                'if': {'filter_query': '{Status} = "Descartado"'},
                 'backgroundColor': '#fff3cd',
                 'color': '#856404'
             },
@@ -2685,6 +2958,424 @@ if __name__ == '__main__':
         print("✗ Erro na criação da engine. Verifique as configurações em DB_CONFIG")
 
 # ==================== CALLBACKS PARA REDUÇÃO DE CUSTOS ====================
+
+@app.callback(
+    Output('custos-por-setor', 'figure'),
+    [Input('interval-equipamentos', 'n_intervals'),
+     Input('refresh-btn-equip', 'n_clicks')]
+)
+def update_custos_por_setor(n, refresh_clicks):
+    """Atualiza gráfico de análise de custos por setor"""
+    df = execute_query(QUERIES['custos_por_setor'])
+    
+    if df.empty:
+        return go.Figure().add_annotation(
+            text="Sem dados disponíveis", 
+            showarrow=False,
+            font=dict(size=16, color='#6c757d')
+        )
+    
+    # Top 10 setores
+    df_top = df.head(10)
+    
+    fig = go.Figure()
+    
+    # Barras de colaboradores (fundo)
+    fig.add_trace(go.Bar(
+        x=df_top['Setor'],
+        y=df_top['QuantidadeColaboradores'],
+        name='Colaboradores',
+        marker=dict(color='#e9ecef'),
+        yaxis='y',
+        hovertemplate='<b>%{x}</b><br>Colaboradores: %{y}<extra></extra>'
+    ))
+    
+    # Barras de equipamentos (frente)
+    fig.add_trace(go.Bar(
+        x=df_top['Setor'],
+        y=df_top['QuantidadeEquipamentos'],
+        name='Equipamentos',
+        marker=dict(color='#6366f1'),
+        yaxis='y',
+        hovertemplate='<b>%{x}</b><br>Equipamentos: %{y}<extra></extra>'
+    ))
+    
+    # Linha de ratio equipamento/colaborador
+    fig.add_trace(go.Scatter(
+        x=df_top['Setor'],
+        y=df_top['EquipamentoPorColaborador'],
+        mode='lines+markers',
+        name='Ratio Equip/Colab',
+        yaxis='y2',
+        line=dict(color='#ef4444', width=3),
+        marker=dict(size=8, color='#ef4444'),
+        hovertemplate='<b>%{x}</b><br>Ratio: %{y:.2f}<extra></extra>'
+    ))
+    
+    fig.update_layout(
+        title=dict(
+            text='<b>Análise de Custos e Eficiência por Setor</b>',
+            font=dict(size=18, color='#1e1e1e', family='Inter'),
+            x=0.5,
+            y=0.95
+        ),
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)',
+        font=dict(color='#1e1e1e', size=12, family='Inter'),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="center",
+            x=0.5
+        ),
+        margin=dict(t=80, b=100, l=60, r=60),
+        height=500,
+        xaxis=dict(
+            showgrid=False,
+            title=dict(text='<b>Setor</b>', font=dict(size=14)),
+            linecolor='#e9ecef',
+            tickangle=-45
+        ),
+        yaxis=dict(
+            showgrid=True,
+            gridcolor='rgba(233,236,239,0.5)',
+            title=dict(text='<b>Quantidade</b>', font=dict(size=14)),
+            linecolor='#e9ecef',
+            side='left'
+        ),
+        yaxis2=dict(
+            showgrid=False,
+            title=dict(text='<b>Equipamento/Colaborador</b>', font=dict(size=14)),
+            overlaying='y',
+            side='right',
+            linecolor='#ef4444',
+            tickfont=dict(color='#ef4444')
+        )
+    )
+    
+    return fig
+
+@app.callback(
+    Output('equipamentos-status-chart', 'figure'),
+    [Input('interval-equipamentos', 'n_intervals'),
+     Input('refresh-btn-equip', 'n_clicks')]
+)
+def update_equipamentos_status_chart(n, refresh_clicks):
+    """Atualiza gráfico de equipamentos por status real"""
+    df = execute_query(QUERIES['equipamentos_por_status_real'])
+    
+    if df.empty:
+        return go.Figure().add_annotation(
+            text="Sem dados disponíveis", 
+            showarrow=False,
+            font=dict(size=16, color='#6c757d')
+        )
+    
+    # Cores específicas para cada status
+    color_map = {
+        'Alocado': '#28a745',
+        'Em Estoque': '#007bff', 
+        'Acesso Remoto': '#6f42c1',
+        'Devolvido': '#20c997',
+        'Descartado': '#dc3545',
+        'Danificado': '#fd7e14',
+        'Extraviado': '#ffc107',
+        'Roubado': '#6c757d',
+        'Sem Status Definido': '#e9ecef'
+    }
+    
+    colors = [color_map.get(status, '#6c757d') for status in df['Status']]
+    
+    fig = px.pie(
+        df, 
+        values='Quantidade', 
+        names='Status',
+        title='<b>Distribuição por Status</b>',
+        color_discrete_sequence=colors
+    )
+    
+    fig.update_traces(
+        textposition='inside', 
+        textinfo='percent+label',
+        hovertemplate='<b>%{label}</b><br>Quantidade: %{value}<br>Percentual: %{percent}<extra></extra>',
+        marker=dict(line=dict(color='#ffffff', width=2))
+    )
+    
+    fig.update_layout(
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)',
+        font=dict(color='#1e1e1e', size=10, family='Inter'),
+        title=dict(
+            font=dict(size=14, color='#1e1e1e', family='Inter'),
+            x=0.5,
+            y=0.95
+        ),
+        showlegend=True,
+        legend=dict(
+            orientation="v",
+            yanchor="middle",
+            y=0.5,
+            xanchor="left",
+            x=1.02,
+            font=dict(size=9)
+        ),
+        margin=dict(t=40, b=20, l=20, r=150),
+        height=400
+    )
+    
+    return fig
+
+@app.callback(
+    Output('equipamentos-status-resumo', 'children'),
+    [Input('interval-equipamentos', 'n_intervals'),
+     Input('refresh-btn-equip', 'n_clicks')]
+)
+def update_equipamentos_status_resumo(n, refresh_clicks):
+    """Atualiza resumo de equipamentos por status"""
+    df = execute_query(QUERIES['equipamentos_por_status_real'])
+    
+    if df.empty:
+        return html.Div("Sem dados disponíveis", style={'color': '#6c757d', 'fontStyle': 'italic'})
+    
+    cards = []
+    color_map = {
+        'Alocado': '#28a745',
+        'Em Estoque': '#007bff', 
+        'Acesso Remoto': '#6f42c1',
+        'Devolvido': '#20c997',
+        'Descartado': '#dc3545',
+        'Danificado': '#fd7e14',
+        'Extraviado': '#ffc107',
+        'Roubado': '#6c757d',
+        'Sem Status Definido': '#e9ecef'
+    }
+    
+    icon_map = {
+        'Alocado': '✅',
+        'Em Estoque': '📦',
+        'Acesso Remoto': '🌐',
+        'Devolvido': '↩️',
+        'Descartado': '🗑️',
+        'Danificado': '🔧',
+        'Extraviado': '❓',
+        'Roubado': '🚨',
+        'Sem Status Definido': '❗'
+    }
+    
+    for _, row in df.iterrows():
+        color = color_map.get(row['Status'], '#6c757d')
+        icon = icon_map.get(row['Status'], '📊')
+        
+        card = html.Div([
+            html.Div([
+                html.Div([
+                    html.Span(icon, style={'fontSize': '1.2rem', 'marginRight': '0.5rem'}),
+                    html.Span(str(row['Quantidade']), style={
+                        'fontSize': '1.4rem',
+                        'fontWeight': '700',
+                        'color': '#000000'
+                    })
+                ], style={'marginBottom': '0.3rem'}),
+                html.Div(f"{row['Percentual']:.1f}%", style={
+                    'fontSize': '0.8rem',
+                    'color': '#000000',
+                    'marginBottom': '0.3rem'
+                }),
+                html.Div(row['Status'], style={
+                    'fontSize': '0.75rem',
+                    'fontWeight': '500',
+                    'color': '#000000',
+                    'lineHeight': '1.2',
+                    'textAlign': 'center'
+                })
+            ], style={
+                'padding': '0.8rem',
+                'border': '2px solid #000000',
+                'borderRadius': '8px',
+                'backgroundColor': 'white',
+                'textAlign': 'center',
+                'marginBottom': '0.5rem',
+                'minHeight': '80px',
+                'display': 'flex',
+                'flexDirection': 'column',
+                'justifyContent': 'center',
+                'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'
+            })
+        ])
+        cards.append(card)
+    
+    return html.Div(cards, style={'display': 'grid', 'gridTemplateColumns': 'repeat(auto-fit, minmax(120px, 1fr))', 'gap': '0.5rem'})
+
+@app.callback(
+    Output('equipamentos-criticos-status-chart', 'figure'),
+    [Input('interval-equipamentos', 'n_intervals'),
+     Input('refresh-btn-equip', 'n_clicks')]
+)
+def update_equipamentos_criticos_status_chart(n, refresh_clicks):
+    """Atualiza gráfico de equipamentos críticos por status"""
+    df = execute_query(QUERIES['equipamentos_criticos_por_status'])
+    
+    if df.empty:
+        return go.Figure().add_annotation(
+            text="Nenhum equipamento crítico encontrado", 
+            showarrow=False,
+            font=dict(size=16, color='#28a745')
+        )
+    
+    colors = ['#dc3545', '#fd7e14', '#ffc107', '#6c757d', '#e9ecef']
+    
+    fig = go.Figure()
+    
+    # Barras de quantidade
+    fig.add_trace(go.Bar(
+        x=df['StatusCritico'],
+        y=df['Quantidade'],
+        name='Quantidade',
+        marker=dict(color=colors[:len(df)]),
+        text=df['Quantidade'],
+        textposition='outside',
+        hovertemplate='<b>%{x}</b><br>Quantidade: %{y}<br>Idade Média: %{customdata:.1f} anos<extra></extra>',
+        customdata=df['IdadeMedia']
+    ))
+    
+    fig.update_layout(
+        title=dict(
+            text='<b>Equipamentos em Situação Crítica</b>',
+            font=dict(size=16, color='#1e1e1e', family='Inter'),
+            x=0.5,
+            y=0.95
+        ),
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)',
+        font=dict(color='#1e1e1e', size=12, family='Inter'),
+        showlegend=False,
+        margin=dict(t=60, b=60, l=60, r=40),
+        height=350,
+        xaxis=dict(
+            showgrid=False,
+            title=dict(text='<b>Status</b>', font=dict(size=14)),
+            linecolor='#e9ecef'
+        ),
+        yaxis=dict(
+            showgrid=True,
+            gridcolor='rgba(233,236,239,0.5)',
+            title=dict(text='<b>Quantidade</b>', font=dict(size=14)),
+            linecolor='#e9ecef'
+        )
+    )
+    
+    return fig
+
+@app.callback(
+    Output('equipamentos-status-table', 'children'),
+    [Input('interval-equipamentos', 'n_intervals'),
+     Input('refresh-btn-equip', 'n_clicks')]
+)
+def update_equipamentos_status_table(n, refresh_clicks):
+    """Atualiza tabela detalhada de equipamentos por status"""
+    df = execute_query(QUERIES['equipamentos_detalhado_status'])
+    
+    if df.empty:
+        return html.P("Nenhum equipamento encontrado", 
+                     style={'text-align': 'center', 'color': '#6c757d', 'fontStyle': 'italic'})
+    
+    return dash_table.DataTable(
+        data=df.to_dict('records'),
+        columns=[
+            {"name": "Serial", "id": "Serial"},
+            {"name": "Modelo", "id": "Modelo"}, 
+            {"name": "Status", "id": "StatusRealizado"},
+            {"name": "Campo Usuário", "id": "Usuario"},
+            {"name": "Matrícula", "id": "Matricula"},
+            {"name": "Colaborador", "id": "NomeColaborador"},
+            {"name": "Setor", "id": "Setor"},
+            {"name": "Idade (Anos)", "id": "IdadeAnos"}
+        ],
+        style_table={
+            'overflowX': 'auto',
+            'maxWidth': '100%',
+            'borderRadius': '8px',
+            'overflow': 'hidden'
+        },
+        style_cell={
+            'textAlign': 'left',
+            'padding': '10px 12px',
+            'fontFamily': 'Segoe UI, sans-serif',
+            'fontSize': '0.85rem',
+            'whiteSpace': 'normal',
+            'height': 'auto',
+            'border': 'none',
+            'borderBottom': '1px solid #e9ecef'
+        },
+        style_header={
+            'backgroundColor': '#1e1e1e',
+            'color': 'white',
+            'fontWeight': '600',
+            'textTransform': 'uppercase',
+            'letterSpacing': '0.5px',
+            'fontSize': '0.75rem',
+            'border': 'none'
+        },
+        style_data={
+            'backgroundColor': '#ffffff',
+            'border': 'none'
+        },
+        style_data_conditional=[
+            {
+                'if': {'row_index': 'odd'},
+                'backgroundColor': '#f8f9fa'
+            },
+            {
+                'if': {'filter_query': '{StatusRealizado} = "Descartado"'},
+                'backgroundColor': '#f8d7da',
+                'color': '#721c24'
+            },
+            {
+                'if': {'filter_query': '{StatusRealizado} = "Danificado"'},
+                'backgroundColor': '#fff3cd',
+                'color': '#856404'
+            },
+            {
+                'if': {'filter_query': '{StatusRealizado} = "Extraviado"'},
+                'backgroundColor': '#fff3cd',
+                'color': '#856404'
+            },
+            {
+                'if': {'filter_query': '{StatusRealizado} = "Roubado"'},
+                'backgroundColor': '#f8d7da',
+                'color': '#721c24'
+            },
+            {
+                'if': {'filter_query': '{StatusRealizado} = "Em Estoque"'},
+                'backgroundColor': '#d1ecf1',
+                'color': '#0c5460'
+            },
+            {
+                'if': {'filter_query': '{StatusRealizado} = "Alocado"'},
+                'backgroundColor': '#d4edda',
+                'color': '#155724'
+            },
+            {
+                'if': {'state': 'active'},
+                'backgroundColor': 'rgba(30, 30, 30, 0.1)',
+                'border': '1px solid #1e1e1e'
+            }
+        ],
+        filter_action="native",
+        sort_action="native",
+        page_action="native",
+        page_current=0,
+        page_size=25,
+        tooltip_data=[
+            {
+                'StatusRealizado': {'value': 'Status atual do equipamento no sistema', 'type': 'markdown'},
+                'Usuario': {'value': 'Campo Usuario na base de dados', 'type': 'markdown'},
+                'IdadeAnos': {'value': 'Idade em anos desde a compra', 'type': 'markdown'}
+            } for _ in range(len(df))
+        ],
+        tooltip_duration=None
+    )
 
 @app.callback(
     Output('timeline-reducao-chart', 'figure'),
@@ -2880,6 +3571,37 @@ def update_reducao_data_table(refresh_clicks, n):
 def update_time_reducao(n):
     """Atualiza horário na aba de redução de custos"""
     return datetime.now().strftime('%d/%m/%Y %H:%M:%S')
+
+@app.callback(
+    Output('alerts-section', 'children'),
+    [Input('interval-component', 'n_intervals'),
+     Input('refresh-btn', 'n_clicks')]
+)
+def update_alerts_section(n, refresh_clicks):
+    """Atualiza seção de alertas"""
+    df_alertas = execute_query(QUERIES['alertas_sistema'])
+    
+    if df_alertas.empty:
+        return [html.Div("Nenhum alerta no momento", style={'text-align': 'center', 'color': '#6c757d'})]
+    
+    alerts = []
+    icon_map = {
+        'Colaboradores Demitidos com Equipamentos': 'fas fa-exclamation-triangle',
+        'Equipamentos Descartados/Danificados': 'fas fa-desktop',
+        'Colaboradores Ativos Sem Equipamento': 'fas fa-user-slash'
+    }
+    
+    for _, row in df_alertas.iterrows():
+        icon = icon_map.get(row['TipoAlerta'], 'fas fa-info-circle')
+        alert_card = create_alert_card(
+            row['TipoAlerta'],
+            row['Quantidade'],
+            row['Prioridade'],
+            icon
+        )
+        alerts.append(alert_card)
+    
+    return alerts
 
 if __name__ == '__main__':
     app.run(debug=False, host='0.0.0.0', port=8050)
