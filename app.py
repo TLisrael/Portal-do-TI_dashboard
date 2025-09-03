@@ -3484,7 +3484,7 @@ def update_status_reducao_pie(refresh_clicks, n):
     fig = px.pie(
         values=[qtd_devolvidos, qtd_aguardando],
         names=['Devolvido', 'Aguardando'],
-        color_discrete_sequence=['#000', '#666']
+        color_discrete_sequence=['#28a745', '#dc3545']  # Verde para Devolvido, Vermelho para Aguardando
     )
     
     fig.update_traces(
