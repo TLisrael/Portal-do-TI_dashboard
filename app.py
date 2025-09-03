@@ -309,7 +309,7 @@ QUERIES = {
             COALESCE(col.Nome, 'Não Alocado') as NomeColaborador,
             CASE 
                 WHEN c.Usuario LIKE '%estoque%' THEN 'Estoque'
-                WHEN c.Matricula IS NOT NULL THEN 'Alocado'
+                WHEN c.Matricula IS NOT NULL THEN 'Em Uso'
                 ELSE 'Descartado'
             END as Status
         FROM Computadores c
@@ -321,7 +321,7 @@ QUERIES = {
         SELECT 
             CASE 
                 WHEN c.Usuario LIKE '%estoque%' THEN 'Estoque'
-                WHEN c.Matricula IS NOT NULL THEN 'Alocado'
+                WHEN c.Matricula IS NOT NULL THEN 'Em Uso'
                 ELSE 'Sem Dono'
             END as Status,
             COUNT(*) as quantidade
@@ -329,7 +329,7 @@ QUERIES = {
         GROUP BY 
             CASE 
                 WHEN c.Usuario LIKE '%estoque%' THEN 'Estoque'
-                WHEN c.Matricula IS NOT NULL THEN 'Alocado'
+                WHEN c.Matricula IS NOT NULL THEN 'Em Uso'
                 ELSE 'Sem Dono'
             END
         ORDER BY quantidade DESC
@@ -345,7 +345,7 @@ QUERIES = {
                 WHEN UPPER(COALESCE(c.Usuario, 'SEM STATUS')) = 'DANIFICADO' THEN 'Danificado'
                 WHEN UPPER(COALESCE(c.Usuario, 'SEM STATUS')) = 'EXTRAVIADO' THEN 'Extraviado'
                 WHEN UPPER(COALESCE(c.Usuario, 'SEM STATUS')) = 'ROUBADO' THEN 'Roubado'
-                WHEN c.Matricula IS NOT NULL THEN 'Alocado'
+                WHEN c.Matricula IS NOT NULL THEN 'Em Uso'
                 ELSE 'Sem Status'
             END as Status,
             COUNT(*) as quantidade
@@ -359,7 +359,7 @@ QUERIES = {
                 WHEN UPPER(COALESCE(c.Usuario, 'SEM STATUS')) = 'DANIFICADO' THEN 'Danificado'
                 WHEN UPPER(COALESCE(c.Usuario, 'SEM STATUS')) = 'EXTRAVIADO' THEN 'Extraviado'
                 WHEN UPPER(COALESCE(c.Usuario, 'SEM STATUS')) = 'ROUBADO' THEN 'Roubado'
-                WHEN c.Matricula IS NOT NULL THEN 'Alocado'
+                WHEN c.Matricula IS NOT NULL THEN 'Em Uso'
                 ELSE 'Sem Status'
             END
         ORDER BY quantidade DESC
@@ -374,7 +374,7 @@ QUERIES = {
             COALESCE(col.Nome, 'Não Alocado') as NomeColaborador,
             CASE 
                 WHEN c.Usuario LIKE '%estoque%' THEN 'Estoque'
-                WHEN c.Matricula IS NOT NULL THEN 'Alocado'
+                WHEN c.Matricula IS NOT NULL THEN 'Em Uso'
                 ELSE 'Descartado'
             END as Status
         FROM Computadores c
@@ -1650,8 +1650,24 @@ def update_kpis(n, refresh_clicks):
     demitidos_com_equipamentos = df_demitidos_equip.iloc[0]['total_demitidos_com_equipamentos'] if not df_demitidos_equip.empty else 0
     df_demitidos_equip_detail = execute_query(QUERIES['colaboradores_demitidos_com_equipamentos'])
     
+    df_colab_ativos_equip = execute_query(QUERIES['kpi_colaboradores_ativos_com_equipamentos'])
+    colaboradores_ativos_equipamentos = df_colab_ativos_equip.iloc[0]['total_colaboradores_ativos_com_equipamentos'] if not df_colab_ativos_equip.empty else 0
+    
     df_equip_sem_dono = execute_query(QUERIES['kpi_equipamentos_sem_dono'])
     equipamentos_descartados = df_equip_sem_dono.iloc[0]['total_equipamentos_descartados'] if not df_equip_sem_dono.empty else 0
+    
+    df_ativos_sem_pc = execute_query(QUERIES['kpi_colaboradores_ativos_sem_computador'])
+    colaboradores_ativos_sem_pc = df_ativos_sem_pc.iloc[0]['total_colaboradores_ativos_sem_computador'] if not df_ativos_sem_pc.empty else 0
+    
+    df_estoque_total = execute_query(QUERIES['total_equipamentos_estoque'])
+    total_estoque = df_estoque_total.iloc[0]['TotalEmEstoque'] if not df_estoque_total.empty and df_estoque_total.iloc[0]['TotalEmEstoque'] is not None else 0
+    
+    df_equip_alocados = execute_query(QUERIES['kpi_equipamentos_alocados'])
+    equipamentos_alocados = df_equip_alocados.iloc[0]['total_equipamentos_alocados'] if not df_equip_alocados.empty else 0
+    taxa_alocacao = 0
+    if (equipamentos_alocados or 0) + (total_estoque or 0) > 0:
+        total_computadores_calc = equipamentos_alocados + total_estoque
+        taxa_alocacao = round((equipamentos_alocados / total_computadores_calc) * 100, 1)
     
     idade_path = os.path.join(os.path.dirname(__file__), 'idade_computadores.xlsx')
     media_idade_anos = None
@@ -1714,7 +1730,10 @@ def update_kpis(n, refresh_clicks):
     card_terc_ativos = create_kpi_card("Terceirizados Ativos", terceirizados_ativos, "fas fa-user-check", "Com equipamentos")
     card_demitidos = create_kpi_card("Colaboradores Demitidos", colaboradores_demitidos, "fas fa-user-slash", f"{demitidos_com_equipamentos} com equipamentos")
     card_aviso_wrapped = html.Div(create_kpi_card("Aviso Prévio", colaboradores_aviso_previo, "fas fa-clock", "Colaboradores"), id='kpi-aviso')
+    card_colab_ativos = create_kpi_card("Colaboradores c/ Equipamentos", colaboradores_ativos_equipamentos, "fas fa-users", "Ativos com equipamentos")
     card_equip_nao_controlados = create_kpi_card("Equipamentos Críticos", equipamentos_descartados, "fas fa-exclamation-triangle", "Descartados/Danificados/Extraviados")
+    card_ativos_sem_pc = create_kpi_card("Ativos sem computador", colaboradores_ativos_sem_pc, "fas fa-user", "Colaboradores ativos")
+    card_taxa_aloc = create_kpi_card("Taxa de alocação", f"{taxa_alocacao}%", "fas fa-chart-line", "Equip. alocados / total")
     card_media_idade = create_kpi_card("Média idade PCs", media_idade_anos if media_idade_anos is not None else '-', "fas fa-hourglass-half", "Anos")
 
     df_aviso_detail = execute_query(QUERIES['colaboradores_aviso_previo'])
@@ -1740,7 +1759,10 @@ def update_kpis(n, refresh_clicks):
         card_terc_ativos,
         card_demitidos,
         card_aviso_wrapped,
+        card_colab_ativos,
         card_equip_nao_controlados,
+        card_ativos_sem_pc,
+        card_taxa_aloc,
         card_media_idade,
         
         popover_aviso
@@ -3074,7 +3096,7 @@ def update_equipamentos_status_chart(n, refresh_clicks):
     
     # Cores específicas para cada status
     color_map = {
-        'Alocado': '#28a745',
+        'Em Uso': '#28a745',
         'Em Estoque': '#007bff', 
         'Acesso Remoto': '#6f42c1',
         'Devolvido': '#20c997',
@@ -3082,7 +3104,8 @@ def update_equipamentos_status_chart(n, refresh_clicks):
         'Danificado': '#fd7e14',
         'Extraviado': '#ffc107',
         'Roubado': '#6c757d',
-        'Sem Status Definido': '#e9ecef'
+        'Sem Status': '#e9ecef',
+        'Sem Dono': '#868e96'
     }
     
     colors = [color_map.get(status, '#6c757d') for status in df['Status']]
@@ -3140,7 +3163,7 @@ def update_equipamentos_status_resumo(n, refresh_clicks):
     
     cards = []
     color_map = {
-        'Alocado': '#28a745',
+        'Em Uso': '#28a745',
         'Em Estoque': '#007bff', 
         'Acesso Remoto': '#6f42c1',
         'Devolvido': '#20c997',
@@ -3148,11 +3171,12 @@ def update_equipamentos_status_resumo(n, refresh_clicks):
         'Danificado': '#fd7e14',
         'Extraviado': '#ffc107',
         'Roubado': '#6c757d',
-        'Sem Status Definido': '#e9ecef'
+        'Reparo': '#ff6b35',
+        'Status Indefinido': '#e9ecef'
     }
     
     icon_map = {
-        'Alocado': '✅',
+        'Em Uso': '✅',
         'Em Estoque': '📦',
         'Acesso Remoto': '🌐',
         'Devolvido': '↩️',
@@ -3160,7 +3184,10 @@ def update_equipamentos_status_resumo(n, refresh_clicks):
         'Danificado': '🔧',
         'Extraviado': '❓',
         'Roubado': '🚨',
-        'Sem Status Definido': '❗'
+        'Reparo': '🔧',
+        'Sem Status': '❗',
+        'Sem Dono': '❗',
+        'Status Indefinido': '❗'
     }
     
     for _, row in df.iterrows():
