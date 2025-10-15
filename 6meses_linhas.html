@@ -1,0 +1,715 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Linhas vivo</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@200;300;400;500&display=swap');
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            font-weight: 200;
+            background: #ffffff;
+            color: #2c3e50;
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 40px 20px;
+        }
+
+        h1 {
+            font-weight: 200;
+            font-size: 2.5rem;
+            color: #2c3e50;
+            text-align: center;
+            margin-bottom: 20px;
+            letter-spacing: -0.02em;
+        }
+
+        .subtitle {
+            text-align: center;
+            color: #7f8c8d;
+            font-size: 1.1rem;
+            margin-bottom: 50px;
+            font-weight: 200;
+        }
+
+        .nav-tabs {
+            display: flex;
+            justify-content: center;
+            gap: 0;
+            margin-bottom: 40px;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            overflow: hidden;
+            background: #f8f9fa;
+        }
+        
+        .nav-tab {
+            padding: 15px 30px;
+            border: none;
+            background: transparent;
+            color: #7f8c8d;
+            cursor: pointer;
+            font-weight: 300;
+            font-size: 0.95rem;
+            transition: all 0.2s ease;
+            border-right: 1px solid #e0e0e0;
+        }
+        
+        .nav-tab:last-child {
+            border-right: none;
+        }
+        
+        .nav-tab:hover {
+            background: #e9ecef;
+            color: #2c3e50;
+        }
+        
+        .nav-tab.active {
+            background: #2c3e50;
+            color: white;
+            font-weight: 400;
+        }
+
+        .page {
+            display: none;
+        }
+        
+        .page.active {
+            display: block;
+        }
+
+        .card {
+            background: white;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 30px;
+            margin-bottom: 30px;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 40px;
+        }
+
+        .stat-card {
+            background: #f8f9fa;
+            border: 1px solid #e0e0e0;
+            padding: 25px;
+            border-radius: 8px;
+            text-align: center;
+        }
+
+        .stat-number {
+            font-size: 2.5rem;
+            font-weight: 200;
+            color: #2c3e50;
+            margin-bottom: 10px;
+        }
+
+        .stat-label {
+            font-size: 0.9rem;
+            color: #7f8c8d;
+            font-weight: 300;
+        }
+
+        .lines-container {
+            background: white;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        .lines-header {
+            background: #f8f9fa;
+            color: #2c3e50;
+            padding: 20px 30px;
+            font-weight: 300;
+            font-size: 1.1rem;
+            border-bottom: 1px solid #e0e0e0;
+        }
+
+        .lines-list {
+            max-height: 600px;
+            overflow-y: auto;
+        }
+
+        .line-item {
+            display: grid;
+            grid-template-columns: 1fr 150px 120px 100px 100px;
+            gap: 20px;
+            padding: 15px 30px;
+            border-bottom: 1px solid #f0f0f0;
+            align-items: center;
+            transition: all 0.2s ease;
+        }
+
+        .line-item:hover {
+            background: #f8f9fa;
+        }
+
+        .line-item:last-child {
+            border-bottom: none;
+        }
+
+        .line-number {
+            font-family: 'Courier New', monospace;
+            font-weight: 400;
+            color: #2c3e50;
+        }
+
+        .line-usage {
+            color: #7f8c8d;
+            font-size: 0.9rem;
+        }
+
+        .line-sessions {
+            color: #7f8c8d;
+            font-size: 0.9rem;
+            text-align: center;
+        }
+
+        .status-badge {
+            padding: 6px 12px;
+            border-radius: 4px;
+            font-size: 0.8rem;
+            font-weight: 300;
+            text-align: center;
+        }
+
+        .sem-uso {
+            background: #f8f9fa;
+            color: #dc3545;
+            border: 1px solid #dc3545;
+        }
+
+        .baixo-uso {
+            background: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeaa7;
+        }
+
+        .uso-medio {
+            background: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+        }
+
+        .uso-alto {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+
+        .user-name {
+            grid-column: 2;
+            padding: 6px 8px;
+            font-size: 0.85rem;
+            font-weight: 300;
+            color: #6c757d;
+            background: transparent;
+            border: none;
+            border-radius: 0;
+            display: flex;
+            align-items: center;
+            font-style: italic;
+        }
+
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 25px;
+            margin-bottom: 30px;
+        }
+
+        .metric-card {
+            background: white;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 25px;
+            text-align: center;
+        }
+
+        .metric-title {
+            font-size: 1.1rem;
+            font-weight: 300;
+            margin-bottom: 15px;
+            color: #2c3e50;
+        }
+
+        .metric-value {
+            font-size: 2.5rem;
+            font-weight: 200;
+            color: #2c3e50;
+            margin-bottom: 5px;
+        }
+
+        .metric-label {
+            font-size: 0.9rem;
+            color: #7f8c8d;
+            font-weight: 300;
+        }
+
+        .chart-container {
+            background: white;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 25px;
+            margin-bottom: 30px;
+        }
+
+        .chart-title {
+            font-size: 1.1rem;
+            font-weight: 300;
+            margin-bottom: 20px;
+            color: #2c3e50;
+            text-align: center;
+        }
+
+        .chart-canvas {
+            max-height: 400px;
+        }
+
+        @media (max-width: 768px) {
+            h1 { font-size: 2rem; }
+            .container { padding: 20px 15px; }
+            .card { padding: 20px; margin-bottom: 20px; }
+            .nav-tabs { flex-direction: column; }
+            .nav-tab { border-right: none; border-bottom: 1px solid #e0e0e0; }
+            .nav-tab:last-child { border-bottom: none; }
+            .line-item { 
+                grid-template-columns: 1fr; 
+                gap: 10px; 
+                text-align: left; 
+            }
+            .stats-grid { grid-template-columns: 1fr; }
+            .metrics-grid { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Linhas Vvivo</h1>
+        <p class="subtitle">Consumo nos ultimos 6 meses</p>
+
+        <div class="nav-tabs">
+            <button class="nav-tab active" onclick="showPage('sem-uso')">
+                Linhas sem consumo
+            </button>
+            <button class="nav-tab" onclick="showPage('com-uso')">
+                Linhas em Uso
+            </button>
+            <button class="nav-tab" onclick="showPage('metricas')">
+                Métricas
+            </button>
+        </div>
+
+        <div id="sem-uso" class="page active">
+            <div class="card">
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-number">23</div>
+                        <div class="stat-label">Linhas sem consumo relevante</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-number">14.6%</div>
+                        <div class="stat-label">Do total</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-number">157</div>
+                        <div class="stat-label">Total de linhas</div>
+                    </div>
+                </div>
+
+                <div class="lines-container">
+                    <div class="lines-header">
+                        Todas as 23 linhas sem consumo relevante - Usuários identificados
+                    </div>
+                    <div class="lines-list" id="linhas-sem-uso">
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="com-uso" class="page">
+            <div class="card">
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-number">134</div>
+                        <div class="stat-label">Linhas ativas</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-number">85.4%</div>
+                        <div class="stat-label">Do total</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-number">127.1</div>
+                        <div class="stat-label">GB médio por linha</div>
+                    </div>
+                </div>
+
+                <div class="lines-container">
+                    <div class="lines-header">
+                        Todas as 134 linhas com uso ativo - Usuários identificados
+                    </div>
+                    <div class="lines-list" id="linhas-com-uso">
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="metricas" class="page">
+            <div class="card">
+                <div class="metrics-grid">
+                    <div class="metric-card">
+                        <div class="metric-title">Consumo Total</div>
+                        <div class="metric-value">17.0</div>
+                        <div class="metric-label">TB nos 6 meses</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-title">Maior Consumidor</div>
+                        <div class="metric-value">385.9</div>
+                        <div class="metric-label">GB em uma linha</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-title">Linhas Ativas</div>
+                        <div class="metric-value">134</div>
+                        <div class="metric-label">de 157 totais</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-title">Economia Potencial</div>
+                        <div class="metric-value">23</div>
+                        <div class="metric-label">linhas canceláveis</div>
+                    </div>
+                </div>
+
+                <div class="chart-container">
+                    <div class="chart-title">Distribuição de Uso por Categoria</div>
+                    <canvas id="chartDistribuicao" class="chart-canvas"></canvas>
+                </div>
+
+                <div class="chart-container">
+                    <div class="chart-title">Top 10 Maiores Consumidores</div>
+                    <canvas id="chartTop10" class="chart-canvas"></canvas>
+                </div>
+
+                <div class="chart-container">
+                    <div class="chart-title">Consumo por Faixa de Uso</div>
+                    <canvas id="chartFaixas" class="chart-canvas"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+    <footer>
+        <span>© WOOD PLC.</span>
+    </footer>
+
+    <script>
+        const linhasSemUso = [
+            { telefone: '21-96729-8530', uso: 0.0, sessoes: 0, usuario: 'SEM CONSUMO RELEVANTE' },
+            { telefone: '21-96747-1151', uso: 0.0, sessoes: 0, usuario: 'SEM CONSUMO RELEVANTE' },
+            { telefone: '21-96747-4750', uso: 0.0, sessoes: 0, usuario: 'ALEX DE MELO MACHADO' },
+            { telefone: '21-96754-3199', uso: 0.0, sessoes: 0, usuario: 'HIAGO PEREIRA DAUDT' },
+            { telefone: '21-97161-9941', uso: 0.0, sessoes: 0, usuario: 'SEM CONSUMO RELEVANTE' },
+            { telefone: '21-97218-5152', uso: 0.0, sessoes: 0, usuario: 'SEM CONSUMO RELEVANTE' },
+            { telefone: '21-97286-8541', uso: 0.0, sessoes: 0, usuario: 'SEM CONSUMO RELEVANTE' },
+            { telefone: '21-97295-0716', uso: 0.0, sessoes: 0, usuario: 'SEM CONSUMO RELEVANTE' },
+            { telefone: '21-97546-4883', uso: 0.0, sessoes: 0, usuario: 'SEM CONSUMO RELEVANTE' },
+            { telefone: '21-99308-8451', uso: 0.0, sessoes: 0, usuario: 'SEM CONSUMO RELEVANTE' },
+            { telefone: '21-99417-4039', uso: 0.0, sessoes: 0, usuario: 'SEM CONSUMO RELEVANTE' },
+            { telefone: '21-99573-5910', uso: 0.0, sessoes: 0, usuario: 'SEM CONSUMO RELEVANTE' },
+            { telefone: '21-99582-8720', uso: 0.0, sessoes: 0, usuario: 'SEM CONSUMO RELEVANTE' },
+            { telefone: '21-99628-2229', uso: 0.0, sessoes: 0, usuario: 'SEM CONSUMO RELEVANTE' },
+            { telefone: '21-99638-6268', uso: 0.0, sessoes: 0, usuario: 'SEM CONSUMO RELEVANTE' },
+            { telefone: '21-99642-6126', uso: 0.0, sessoes: 0, usuario: 'SEM CONSUMO RELEVANTE' },
+            { telefone: '21-99720-0671', uso: 0.0, sessoes: 0, usuario: 'FRANCILEI ALVES PEREIRA' },
+            { telefone: '21-99748-9522', uso: 0.0, sessoes: 0, usuario: 'DIOGO FERREIRA RODRIGUES' },
+            { telefone: '21-99765-2489', uso: 0.0, sessoes: 0, usuario: 'SEM CONSUMO RELEVANTE' },
+            { telefone: '21-99883-1246', uso: 0.0, sessoes: 0, usuario: 'MARCELO DELGADO LOPES' },
+            { telefone: '21-99927-7527', uso: 0.0, sessoes: 0, usuario: 'CARLOS EDUARDO FERREIRA' },
+            { telefone: '22-99221-6510', uso: 0.0, sessoes: 0, usuario: 'SEM CONSUMO RELEVANTE' },
+            { telefone: '22-99256-3638', uso: 0.0, sessoes: 0, usuario: 'SEM CONSUMO RELEVANTE' }
+        ];
+
+        const linhasComUso = [
+            { telefone: '21-96726-8788', uso: 385.9, sessoes: 463, status: 'uso-alto', usuario: 'ESTOQUE' },
+            { telefone: '21-99528-6151', uso: 369.4, sessoes: 1655, status: 'uso-alto', usuario: 'DANIEL CARVALHO' },
+            { telefone: '21-99706-5399', uso: 255.1, sessoes: 1206, status: 'uso-alto', usuario: 'PAULO CEZAR DIAS' },
+            { telefone: '21-96716-7784', uso: 247.4, sessoes: 1598, status: 'uso-alto', usuario: 'BRUNA ROQUE' },
+            { telefone: '21-99973-8542', uso: 236.4, sessoes: 1287, status: 'uso-alto', usuario: 'SIMONE DUARTE' },
+            { telefone: '21-97223-6333', uso: 226.3, sessoes: 3155, status: 'uso-alto', usuario: 'DERICK JORDAN' },
+            { telefone: '21-96717-5841', uso: 204.9, sessoes: 1305, status: 'uso-alto', usuario: 'HENRIQUE PAIVA' },
+            { telefone: '22-99619-2915', uso: 203.9, sessoes: 1334, status: 'uso-alto', usuario: 'ANTONIO BARCELOS' },
+            { telefone: '21-99515-3760', uso: 187.2, sessoes: 1850, status: 'uso-alto', usuario: 'ESTOQUE' },
+            { telefone: '22-99763-2112', uso: 179.0, sessoes: 7304, status: 'uso-alto', usuario: 'ALEXANDRE MENEZES' },
+            { telefone: '21-96738-3209', uso: 176.7, sessoes: 1481, status: 'uso-alto', usuario: 'THAINÁ ISRAEL' },
+            { telefone: '21-97209-8873', uso: 176.5, sessoes: 981, status: 'uso-alto', usuario: 'ESTOQUE' },
+            { telefone: '21-97288-8996', uso: 168.3, sessoes: 258, status: 'uso-alto', usuario: 'ESTOQUE' },
+            { telefone: '21-97208-3724', uso: 166.1, sessoes: 2092, status: 'uso-alto', usuario: 'KLEBER LOPES' },
+            { telefone: '21-99958-7136', uso: 165.7, sessoes: 1017, status: 'uso-alto', usuario: 'LUCAS RICHARD' },
+            { telefone: '21-96724-2185', uso: 146.3, sessoes: 1131, status: 'uso-alto', usuario: 'ESTOQUE' },
+            { telefone: '21-99750-5062', uso: 138.1, sessoes: 4008, status: 'uso-alto', usuario: 'ALAN SILVA' },
+            { telefone: '21-99502-3196', uso: 124.9, sessoes: 1013, status: 'uso-alto', usuario: 'ESTOQUE' },
+            { telefone: '21-96774-7649', uso: 113.0, sessoes: 1893, status: 'uso-alto', usuario: 'EDUARDO CHAMUSCA' },
+            { telefone: '21-99855-3536', uso: 102.6, sessoes: 984, status: 'uso-alto', usuario: 'MAYARA TEIXEIRA' },
+            { telefone: '21-99524-3953', uso: 99.4, sessoes: 958, status: 'uso-alto', usuario: 'LILIAN PEREIRA' },
+            { telefone: '21-96754-3469', uso: 95.9, sessoes: 1203, status: 'uso-alto', usuario: 'LUCIENE NUNES' },
+            { telefone: '21-96717-7121', uso: 94.2, sessoes: 3621, status: 'uso-alto', usuario: 'THOMAZ PARAVIDINO' },
+            { telefone: '21-97214-7705', uso: 93.8, sessoes: 834, status: 'uso-alto', usuario: 'ESTOQUE' },
+            { telefone: '21-97208-8322', uso: 93.6, sessoes: 3726, status: 'uso-alto', usuario: 'LEONARDO AQUINO' },
+            { telefone: '21-97217-9427', uso: 83.6, sessoes: 708, status: 'uso-alto', usuario: 'ESTOQUE' },
+            { telefone: '21-99634-1045', uso: 79.9, sessoes: 986, status: 'uso-alto', usuario: 'EDMAR SILVA' },
+            { telefone: '22-99262-6851', uso: 77.8, sessoes: 5231, status: 'uso-alto', usuario: 'FABIO ALMEIDA'  },
+            { telefone: '22-99755-8345', uso: 76.7, sessoes: 1183, status: 'uso-alto', usuario: 'JONAS TISSIANI' },
+            { telefone: '22-99800-9718', uso: 74.2, sessoes: 2655, status: 'uso-alto', usuario: 'DANIEL FERREIRA' },
+            { telefone: '21-97294-8830', uso: 71.1, sessoes: 1385, status: 'uso-alto', usuario: 'PABLO MORELATO' },
+            { telefone: '21-99924-8204', uso: 64.1, sessoes: 948, status: 'uso-alto', usuario: 'TATIANA TEIXEIRA' },
+            { telefone: '21-99521-1683', uso: 63.8, sessoes: 439, status: 'uso-alto', usuario: 'FELIPE SANTOS' },
+            { telefone: '22-99996-1936', uso: 62.8, sessoes: 1186, status: 'uso-alto', usuario: 'ESTOQUE' },
+            { telefone: '22-99781-3189', uso: 62.4, sessoes: 835, status: 'uso-alto', usuario: 'PETTERSON PRADO' },
+            { telefone: '21-99874-3007', uso: 61.3, sessoes: 968, status: 'uso-alto', usuario: 'HUGO MACHADO' },
+            { telefone: '21-99579-8537', uso: 55.9, sessoes: 636, status: 'uso-alto', usuario: 'SERGIO RAMOS' },
+            { telefone: '22-99725-3856', uso: 55.2, sessoes: 925, status: 'uso-alto', usuario: 'GUILHERME CHAGAS' },
+            { telefone: '21-99208-9960', uso: 54.4, sessoes: 741, status: 'uso-alto', usuario: 'DANIEL OLIVEIRA' },
+            { telefone: '21-99504-7033', uso: 50.3, sessoes: 2038, status: 'uso-alto', usuario: 'ESTOQUE' },
+            { telefone: '21-99570-2548', uso: 50.2, sessoes: 1026, status: 'uso-alto', usuario: 'SIRLEI CRUZ' },
+            { telefone: '21-97999-0034', uso: 46.8, sessoes: 636, status: 'uso-medio', usuario: 'JUSSANA MENEZES' },
+            { telefone: '21-99681-5331', uso: 46.5, sessoes: 1122, status: 'uso-medio', usuario: 'RODRIGO BARRETO' },
+            { telefone: '21-99797-6858', uso: 46.4, sessoes: 8465, status: 'uso-medio', usuario: 'JULIO GONÇALVES' },
+            { telefone: '21-98230-6390', uso: 45.8, sessoes: 1162, status: 'uso-medio', usuario: 'MANUELA MOTA' },
+            { telefone: '21-96779-7952', uso: 43.6, sessoes: 2020, status: 'uso-medio', usuario: 'ANA FERNANDES' },
+            { telefone: '21-99732-0033', uso: 39.6, sessoes: 612, status: 'uso-medio', usuario: 'ESTOQUE' },
+            { telefone: '21-96768-1635', uso: 39.4, sessoes: 1150, status: 'uso-medio', usuario: 'ESTOQUE' },
+            { telefone: '21-99876-3306', uso: 39.3, sessoes: 583, status: 'uso-medio', usuario: 'ESTOQUE' },
+            { telefone: '21-97269-2661', uso: 36.9, sessoes: 1270, status: 'uso-medio', usuario: 'ESTOQUE' },
+            { telefone: '22-99242-2399', uso: 36.7, sessoes: 1583, status: 'uso-medio', usuario: 'ESTOQUE' },
+            { telefone: '21-99566-4583', uso: 36.2, sessoes: 1174, status: 'uso-medio', usuario: 'ESTOQUE' },   
+            { telefone: '21-99864-5825', uso: 34.4, sessoes: 1796, status: 'uso-medio', usuario: 'JACY ARAUJO' },
+            { telefone: '21-99743-1105', uso: 34.1, sessoes: 991, status: 'uso-medio', usuario: 'ANDERSON FRUTUOSO' },
+            { telefone: '22-99892-8993', uso: 33.8, sessoes: 3769, status: 'uso-medio', usuario: 'YANCA ANDRADE' },
+            { telefone: '21-97178-4590', uso: 32.3, sessoes: 626, status: 'uso-medio', usuario: 'PAULO MAFORT' },
+            { telefone: '22-99888-3735', uso: 32.1, sessoes: 823, status: 'uso-medio', usuario: 'ESTOQUE' },
+            { telefone: '21-99199-0035', uso: 32.1, sessoes: 1619, status: 'uso-medio', usuario: 'FARIS MIGUEL' },
+            { telefone: '21-99832-4617', uso: 31.2, sessoes: 1174, status: 'uso-medio', usuario: 'LUCAS CARVALHO' },
+            { telefone: '22-99795-6747', uso: 28.1, sessoes: 666, status: 'uso-medio', usuario: 'CASSIA MENDES' },
+            { telefone: '21-96739-4845', uso: 24.9, sessoes: 1522, status: 'uso-medio', usuario: 'PATRICIA LUDGERO' },
+            { telefone: '21-97564-4394', uso: 24.4, sessoes: 1293, status: 'uso-medio', usuario: 'REJANE ABREU' },
+            { telefone: '22-99227-9302', uso: 24.1, sessoes: 646, status: 'uso-medio', usuario: 'FABIO TAVARES' },
+            { telefone: '22-99994-5806', uso: 23.2, sessoes: 195, status: 'uso-medio', usuario: 'JESSICA PIMENTEL' },
+            { telefone: '22-99221-9109', uso: 22.8, sessoes: 377, status: 'uso-medio', usuario: 'GABRIEL SALES' },
+            { telefone: '21-99608-1270', uso: 22.8, sessoes: 1699, status: 'uso-medio', usuario: 'LUIS BECKMANN' },
+            { telefone: '21-99920-9130', uso: 21.1, sessoes: 1073, status: 'uso-medio', usuario: 'ESTOQUE' },
+            { telefone: '21-96734-8276', uso: 20.7, sessoes: 685, status: 'uso-medio', usuario: 'KAMILA NASCIMENTO' },
+            { telefone: '22-99872-8513', uso: 20.4, sessoes: 2272, status: 'uso-medio', usuario: 'ESTOQUE' },
+            { telefone: '21-99734-3746', uso: 20.0, sessoes: 884, status: 'uso-medio', usuario: 'HELIO OLIVEIRA' },
+            { telefone: '21-96726-5906', uso: 20.0, sessoes: 1293, status: 'uso-medio', usuario: 'RAONY XAVIER' },
+            { telefone: '21-99777-0805', uso: 18.0, sessoes: 1528, status: 'uso-medio', usuario: 'EMILLE SANTOS' },
+            { telefone: '21-97165-4636', uso: 17.9, sessoes: 242, status: 'uso-medio', usuario: 'GILDA MOLL' },
+            { telefone: '22-99262-5913', uso: 16.5, sessoes: 896, status: 'uso-medio', usuario: 'JAILSON SILVA' },
+            { telefone: '21-99694-5085', uso: 16.5, sessoes: 723, status: 'uso-medio', usuario: 'ANNA FERREIRA' },
+            { telefone: '22-99866-1702', uso: 16.5, sessoes: 846, status: 'uso-medio', usuario: 'PATRICIA LUSTOSA DIAS' },
+            { telefone: '22-99256-4392', uso: 15.0, sessoes: 570, status: 'uso-medio', usuario: 'VANGERGLEDSON ANDERSON' },
+            { telefone: '21-97223-9395', uso: 15.0, sessoes: 536, status: 'uso-medio', usuario: 'JOAO SILVA' },
+            { telefone: '22-99819-6785', uso: 14.2, sessoes: 582, status: 'uso-medio', usuario: 'ANA DUARTE' },
+            { telefone: '21-99597-7318', uso: 13.6, sessoes: 719, status: 'uso-medio', usuario: 'DRIELY CARVALHO' },
+            { telefone: '22-99267-9686', uso: 13.1, sessoes: 366, status: 'uso-medio', usuario: 'ESTOQUE' },
+            { telefone: '21-99846-9613', uso: 12.4, sessoes: 975, status: 'uso-medio', usuario: 'MARCIO SOSKA' },
+            { telefone: '21-97288-2275', uso: 12.2, sessoes: 742, status: 'uso-medio', usuario: 'ROSELENE OLIVEIRA' },
+            { telefone: '21-99710-5501', uso: 11.6, sessoes: 1065, status: 'uso-medio', usuario: 'WANDERSON JUNIOR' },
+            { telefone: '21-96728-0058', uso: 11.1, sessoes: 346, status: 'uso-medio', usuario: 'JAIR TAVARES' },
+            { telefone: '21-99934-9235', uso: 10.6, sessoes: 190, status: 'uso-medio', usuario: 'NIVEA ABREU' },
+            { telefone: '21-97471-8744', uso: 10.4, sessoes: 849, status: 'uso-medio', usuario: 'DANIELLY ARAUJO' },
+            { telefone: '21-96749-5305', uso: 10.4, sessoes: 519, status: 'uso-medio', usuario: 'ESTOQUE'  },
+            { telefone: '22-99877-9352', uso: 10.1, sessoes: 474, status: 'uso-medio', usuario: 'RODRIGO RODRIGUES' },
+            { telefone: '21-99931-6723', uso: 9.1, sessoes: 1990, status: 'baixo-uso', usuario: 'JOSE ESTEVAO' },
+            { telefone: '21-99879-9914', uso: 8.5, sessoes: 1009, status: 'baixo-uso', usuario: 'JEAN SANTOS' },
+            { telefone: '21-96746-6127', uso: 8.1, sessoes: 1093, status: 'baixo-uso', usuario: 'RODRIGO MACEDO' },
+            { telefone: '21-96754-7661', uso: 7.4, sessoes: 957, status: 'baixo-uso', usuario: 'ESTOQUE' },
+            { telefone: '21-97159-8110', uso: 6.9, sessoes: 454, status: 'baixo-uso', usuario: 'MARIANA LIMA' },
+            { telefone: '21-99753-4031', uso: 6.6, sessoes: 1298, status: 'baixo-uso', usuario: 'SILVIA CARNEIRO' },
+            { telefone: '21-97230-8943', uso: 6.4, sessoes: 499, status: 'baixo-uso', usuario: 'ANDRE FREITAS' },
+            { telefone: '21-99422-4402', uso: 6.2, sessoes: 935, status: 'baixo-uso',usuario: 'ESTOQUE' },
+            { telefone: '21-97263-4285', uso: 4.3, sessoes: 212, status: 'baixo-uso', usuario: 'WALTER LOPES' },
+            { telefone: '21-99760-7989', uso: 4.3, sessoes: 451, status: 'baixo-uso', usuario: 'JOELSON CARVALHO' },
+            { telefone: '22-99215-5594', uso: 3.9, sessoes: 893, status: 'baixo-uso', usuario: 'BRENNO MARINI' },
+            { telefone: '21-97299-7210', uso: 3.8, sessoes: 599, status: 'baixo-uso', usuario: 'SORYANE CORDEIRO' },
+            { telefone: '22-99790-1463', uso: 3.7, sessoes: 186, status: 'baixo-uso', usuario: 'BRENNO MARINI' },
+            { telefone: '21-97999-0028', uso: 3.6, sessoes: 217, status: 'baixo-uso', usuario: 'MARIANA LIMA' },
+            { telefone: '21-99631-5374', uso: 3.5, sessoes: 63, status: 'baixo-uso', usuario: 'PAULO RIBAS' },
+            { telefone: '21-99576-0184', uso: 3.3, sessoes: 615, status: 'baixo-uso', usuario: 'FRANCISCO ALVES' },
+            { telefone: '21-97233-2159', uso: 3.3, sessoes: 339, status: 'baixo-uso', usuario: 'ESTOQUE' },
+            { telefone: '21-96764-5262', uso: 3.1, sessoes: 2046, status: 'baixo-uso', usuario: 'LUCIANE HOLANDA' },
+            { telefone: '21-99657-6916', uso: 3.1, sessoes: 2139, status: 'baixo-uso', usuario: 'BRUNO AGUIAR' },
+            { telefone: '21-99842-7494', uso: 3.0, sessoes: 731, status: 'baixo-uso', usuario: 'VITOR CARVALHO' },
+            { telefone: '22-99808-2623', uso: 2.8, sessoes: 88, status: 'baixo-uso', usuario: 'PHILIPE NALI' },
+            { telefone: '21-99937-9912', uso: 2.7, sessoes: 404, status: 'baixo-uso', usuario: 'ESTOQUE' },
+            { telefone: '22-99622-0196', uso: 2.6, sessoes: 417, status: 'baixo-uso', usuario: 'AYLA DIAS' },
+            { telefone: '22-99244-4881', uso: 2.2, sessoes: 29, status: 'baixo-uso', usuario: 'ANDERSON BARBOSA' },
+            { telefone: '22-99242-2380', uso: 2.2, sessoes: 857, status: 'baixo-uso', usuario: 'JOANNA AREAL' },
+            { telefone: '22-99214-8916', uso: 2.1, sessoes: 323, status: 'baixo-uso', usuario: 'RAFAELLA MACHADO' },
+            { telefone: '21-97113-2148', uso: 1.8, sessoes: 513, status: 'baixo-uso', usuario: 'GABRIELA CORREA' },
+            { telefone: '21-99657-9133', uso: 1.7, sessoes: 1303, status: 'baixo-uso', usuario: 'ANA MATTZA'  },
+            { telefone: '21-99734-2485', uso: 1.6, sessoes: 348, status: 'baixo-uso', usuario: 'LEONARDO BORGES'  },
+            { telefone: '22-99852-6544', uso: 1.4, sessoes: 518, status: 'baixo-uso', usuario: 'RAFAEL SÁ'  },
+            { telefone: '21-99507-5745', uso: 1.4, sessoes: 580, status: 'baixo-uso', usuario: 'LUCIANA PIRES'  },
+            { telefone: '21-97634-8422', uso: 1.2, sessoes: 40, status: 'baixo-uso', usuario: 'ESTOQUE'  },
+            { telefone: '21-97111-3061', uso: 1.2, sessoes: 237, status: 'baixo-uso', usuario: 'ESTOQUE' },
+            { telefone: '21-99668-2956', uso: 1.1, sessoes: 115, status: 'baixo-uso', usuario: 'RAFAEL PARRILHA' },
+            { telefone: '21-99640-1089', uso: 0.9, sessoes: 223, status: 'baixo-uso', usuario: 'PATRICIA BENTO' },
+            { telefone: '21-99192-7921', uso: 0.9, sessoes: 1116, status: 'baixo-uso', usuario: 'TATIANA REIS' },
+            { telefone: '21-99681-2367', uso: 0.8, sessoes: 242, status: 'baixo-uso', usuario: 'LIDIANE SILVA' },
+            { telefone: '21-99262-3498', uso: 0.7, sessoes: 1656, status: 'baixo-uso',usuario: 'MARCO LOPES' },
+            { telefone: '21-99615-3703', uso: 0.5, sessoes: 92, status: 'baixo-uso', usuario: 'ESTOQUE' },
+            { telefone: '21-99626-1695', uso: 0.5, sessoes: 60, status: 'baixo-uso', usuario: 'ESTOQUE' },
+            { telefone: '21-97210-4140', uso: 0.5, sessoes: 55, status: 'baixo-uso', usuario: 'ESTOQUE' },
+            { telefone: '21-96727-4805', uso: 0.4, sessoes: 185, status: 'baixo-uso', usuario: 'SHEILA WILLIAMS' },
+            { telefone: '21-99999-4554', uso: 0.2, sessoes: 157, status: 'baixo-uso', usuario: 'EVANDRO FALCAO' },
+            { telefone: '21-97241-9862', uso: 0.0, sessoes: 200, status: 'baixo-uso', usuario: 'TIAGO CARNEIRO'  },
+            { telefone: '21-99563-2227', uso: 0.0, sessoes: 155, status: 'baixo-uso', usuario: 'ISABELA PODORA' }
+        ];
+
+        function showPage(pageId) {
+            document.querySelectorAll('.page').forEach(page => {
+                page.classList.remove('active');
+            });
+            
+            document.querySelectorAll('.nav-tab').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            
+            document.getElementById(pageId).classList.add('active');
+            event.target.classList.add('active');
+        }
+
+        function carregarLinhasSemUso() {
+            const container = document.getElementById('linhas-sem-uso');
+            container.innerHTML = '';
+            
+            linhasSemUso.forEach(linha => {
+                const item = document.createElement('div');
+                item.className = 'line-item';
+                
+                item.innerHTML = `
+                    <div class="line-number">${linha.telefone}</div>
+                    <div class="user-name">${linha.usuario}</div>
+                    <div class="line-usage">${linha.uso.toFixed(1)} GB</div>
+                    <div class="line-sessions">${linha.sessoes} sessões</div>
+                    <div class="status-badge sem-uso">Sem consumo relevante</div>
+                `;
+                container.appendChild(item);
+            });
+        }
+
+        function carregarLinhasComUso() {
+            const container = document.getElementById('linhas-com-uso');
+            container.innerHTML = '';
+            
+            linhasComUso.forEach(linha => {
+                const item = document.createElement('div');
+                item.className = 'line-item';
+                
+                const statusTexto = {
+                    'uso-alto': 'Alto uso',
+                    'uso-medio': 'Uso médio',
+                    'baixo-uso': 'Baixo uso'
+                }[linha.status];
+                
+                const displayName = linha.usuario || 'Usuário não identificado';
+                
+                item.innerHTML = `
+                    <div class="line-number">${linha.telefone}</div>
+                    <div class="user-name">${displayName}</div>
+                    <div class="line-usage">${linha.uso.toFixed(1)} GB</div>
+                    <div class="line-sessions">${linha.sessoes} sessões</div>
+                    <div class="status-badge ${linha.status}">${statusTexto}</div>
+                `;
+                container.appendChild(item);
+            });
+        }
+        // CRIAR GRÁFICOS
+        function criarGraficos() {
+            const ctxDistribuicao = document.getElementById('chartDistribuicao').getContext('2d');
+            new Chart(ctxDistribuicao, {
+                type: 'pie',
+                data: {
+                    labels: ['Sem Consumo Relevante', 'Baixo Uso', 'Uso Médio', 'Alto Uso'],
+                    datasets: [{
+                        data: [23, 42, 51, 41],
+                        backgroundColor: ['#dc3545', '#ffc107', '#17a2b8', '#28a745']
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        legend: {
+                            position: 'bottom'
+                        }
+                    }
+                }
+            });
+
+            const top10 = linhasComUso.slice(0, 10);
+            const ctxTop10 = document.getElementById('chartTop10').getContext('2d');
+            new Chart(ctxTop10, {
+                type: 'bar',
+                data: {
+                    labels: top10.map(l => l.telefone.split('-')[2]),
+                    datasets: [{
+                        label: 'Consumo (GB)',
+                        data: top10.map(l => l.uso),
+                        backgroundColor: '#2c3e50'
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    scales: {
+                        y: {
+                            beginAtZero: true
+                        }
+                    }
+                }
+            });
+
+            const ctxFaixas = document.getElementById('chartFaixas').getContext('2d');
+            new Chart(ctxFaixas, {
+                type: 'doughnut',
+                data: {
+                    labels: ['0 GB', '0-10 GB', '10-50 GB', '50+ GB'],
+                    datasets: [{
+                        data: [23, 23, 67, 44],
+                        backgroundColor: ['#6c757d', '#ffc107', '#17a2b8', '#28a745']
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        legend: {
+                            position: 'bottom'
+                        }
+                    }
+                }
+            });
+        }
+
+        document.addEventListener('DOMContentLoaded', function() {
+            carregarLinhasSemUso();
+            carregarLinhasComUso();
+            criarGraficos();
+        });
+    </script>
+</body>
+</html>

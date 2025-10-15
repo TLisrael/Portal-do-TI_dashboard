@@ -16,22 +16,61 @@ DB_CONFIG = {
     'database': 'ControleTI',
     'username': 'RM',
     'password': 'rm',
-    'driver': 'ODBC Driver 17 for SQL Server',
     'port': '1433'
 }
 
-# ==================== FUNÇÕES DE CONEXÃO ====================
+# ===================================================================
+
+
 def get_engine():
-    """Cria engine SQLAlchemy para SQL Server"""
+    """Cria engine SQLAlchemy para SQL Server - Compatível com Linux"""
     try:
         password_encoded = urllib.parse.quote_plus(DB_CONFIG['password'])
         username_encoded = urllib.parse.quote_plus(DB_CONFIG['username'])
-        driver_encoded = urllib.parse.quote_plus(DB_CONFIG['driver'])
         
-        connection_string = f"""mssql+pyodbc://{username_encoded}:{password_encoded}@{DB_CONFIG['server']}:{DB_CONFIG['port']}/{DB_CONFIG['database']}?driver={driver_encoded}"""
+        connection_attempts = [
+            {
+                'driver': 'ODBC Driver 18 for SQL Server',
+                'method': 'pyodbc'
+            },
+            {
+                'driver': 'ODBC Driver 17 for SQL Server', 
+                'method': 'pyodbc'
+            },
+            {
+                'driver': 'FreeTDS',
+                'method': 'pyodbc'
+            },
+            # Método 2: pymssql (não precisa de ODBC)
+            {
+                'method': 'pymssql'
+            }
+        ]
         
-        engine = create_engine(connection_string)
-        return engine
+        for attempt in connection_attempts:
+            try:
+                if attempt['method'] == 'pyodbc':
+                    driver_encoded = urllib.parse.quote_plus(attempt['driver'])
+                    connection_string = f"""mssql+pyodbc://{username_encoded}:{password_encoded}@{DB_CONFIG['server']}:{DB_CONFIG['port']}/{DB_CONFIG['database']}?driver={driver_encoded}&TrustServerCertificate=yes"""
+                elif attempt['method'] == 'pymssql':
+                    connection_string = f"""mssql+pymssql://{username_encoded}:{password_encoded}@{DB_CONFIG['server']}:{DB_CONFIG['port']}/{DB_CONFIG['database']}"""
+                
+                print(f"Tentando conexão com: {attempt}")
+                engine = create_engine(connection_string)
+                
+                # Testa a conexão
+                with engine.connect() as connection:
+                    connection.execute(text("SELECT 1"))
+                
+                print(f"Conexão bem-sucedida com: {attempt}")
+                return engine
+                
+            except Exception as e:
+                print(f"Falha com {attempt}: {e}")
+                continue
+        
+        raise Exception("Nenhum método de conexão funcionou")
+        
     except Exception as e:
         print(f"Erro na criação da engine: {e}")
         return None
@@ -117,6 +156,7 @@ QUERIES = {
             SELECT Modelo, COUNT(*) AS Quantidade     
             FROM Computadores     
             WHERE Usuario LIKE '%estoque%'     
+              AND Status NOT IN (4, 6, 8, 9, 5)  -- Excluir: Extraviado, Roubado, Descartado, Danificado, Reparo
             GROUP BY Modelo 
         ) AS Subconsulta
     """,
@@ -128,6 +168,7 @@ QUERIES = {
             COUNT(*) AS Quantidade
         FROM Computadores
         WHERE Usuario LIKE '%estoque%'
+          AND Status NOT IN (4, 6, 8, 9, 5)  -- Excluir: Extraviado, Roubado, Descartado, Danificado, Reparo
         GROUP BY Modelo
         ORDER BY Quantidade DESC
     """,
@@ -182,6 +223,7 @@ QUERIES = {
         SELECT Serial
         FROM Computadores
         WHERE Serial IS NOT NULL
+          AND Status NOT IN (4, 6, 8, 9, 5)  -- Excluir: Extraviado, Roubado, Descartado, Danificado, Reparo
     """,
     
     # Equipamentos alocados (não estoque, com matrícula)
@@ -190,6 +232,7 @@ QUERIES = {
         FROM Computadores
         WHERE Matricula IS NOT NULL
           AND (Usuario IS NULL OR Usuario NOT LIKE '%estoque%')
+          AND Status NOT IN (4, 6, 8, 9, 5)  -- Excluir: Extraviado, Roubado, Descartado, Danificado, Reparo
     """,
     
     'kpi_equipamentos_sem_dono': """
@@ -229,6 +272,14 @@ QUERIES = {
     'total_computadores': """
         SELECT COUNT(*) as total_computadores
         FROM Computadores
+        WHERE Status NOT IN (4, 6, 8, 9, 5)  -- Excluir: Extraviado, Roubado, Descartado, Danificado, Reparo
+    """,
+    
+    'kpi_equipamentos_alugados': """
+        SELECT COUNT(*) as total_equipamentos_alugados
+        FROM Computadores
+        WHERE Modelo LIKE '%Samsung%' OR Modelo LIKE '%SAMSUNG%' OR Modelo LIKE '%samsung%'
+        AND Status NOT IN (4, 6, 8, 9, 5)  -- Excluir: Extraviado, Roubado, Descartado, Danificado, Reparo
     """,
     
     'computadores_por_modelo': """
@@ -237,6 +288,7 @@ QUERIES = {
             COUNT(*) as quantidade
         FROM Computadores
         WHERE Modelo IS NOT NULL
+          AND Status NOT IN (4, 6, 8, 9, 5)  -- Excluir: Extraviado, Roubado, Descartado, Danificado, Reparo
         GROUP BY Modelo
         ORDER BY quantidade DESC
     """,
@@ -542,7 +594,6 @@ QUERIES = {
         ORDER BY Quantidade DESC
     """,
     
-    # Query de diagnóstico simples para ver distribuição por status
     'diagnostico_status_simples': """
         SELECT 
             Status,
@@ -557,26 +608,20 @@ QUERIES = {
 def load_desligamento_data():
     """Carrega e processa os dados do Excel para redução de custos"""
     try:
-        # Lê o arquivo Excel
         df = pd.read_excel('desligamento.xlsx')
         
-        # Remove linhas que são totais ou vazias
         df = df.dropna(subset=['CT'])
         df = df[~df['CT'].astype(str).str.contains('Total', na=False)]
         df = df[df['CT'] != 'CT']  # Remove cabeçalhos duplicados
         
-        # Converte CT para numérico para filtrar valores válidos
         df['CT'] = pd.to_numeric(df['CT'], errors='coerce')
         df = df.dropna(subset=['CT'])
         
-        # Converte colunas monetárias
         for col in ['Valor Economizado/mês', 'Valor Economizado/ano']:
             if col in df.columns:
-                # Remove formatação monetária e converte para float
                 df[col] = df[col].astype(str).str.replace('R$', '').str.replace('.', '').str.replace(',', '.').str.strip()
                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
         
-        # Se não existe coluna anual, calcula baseado na mensal
         if 'Valor Economizado/ano' not in df.columns or df['Valor Economizado/ano'].sum() == 0:
             df['Valor Economizado/ano'] = df['Valor Economizado/mês'] * 12
         
@@ -1058,6 +1103,11 @@ def create_sidebar():
             ], className="nav-item", id="nav-reducao-custos"),
             
             html.Div([
+                html.I(className="fas fa-mobile-alt"),
+                "Linhas Móveis"
+            ], className="nav-item", id="nav-linhas-moveis"),
+            
+            html.Div([
                 html.I(className="fas fa-cog"),
                 "Configurações"
             ], className="nav-item", id="nav-config")
@@ -1336,6 +1386,68 @@ def create_config_content():
         ])
     ])
 
+def create_linhas_moveis_content():
+    """Cria conteúdo da aba de Linhas Móveis"""
+    return html.Div([
+        html.Div([
+            html.Div([
+                html.Div([
+                    html.H1("Linhas Móveis", style={'color': "#000000"}),
+                    html.P("Análise de consumo dos últimos 6 meses", style={'color': '#7f8c8d'})
+                ], className="header-title"),
+            ], className="header-content")
+        ], className="header"),
+        
+        # Navegação por abas
+        html.Div([
+            dcc.Tabs(id="linhas-tabs", value="sem-uso", children=[
+                dcc.Tab(label="Linhas sem consumo", value="sem-uso", style={'fontFamily': 'Inter, sans-serif'}),
+                dcc.Tab(label="Linhas em Uso", value="com-uso", style={'fontFamily': 'Inter, sans-serif'}),
+                dcc.Tab(label="Métricas", value="metricas", style={'fontFamily': 'Inter, sans-serif'}),
+            ], style={'fontFamily': 'Inter, sans-serif'})
+        ], style={'margin': '20px 0'}),
+        
+        # Conteúdo das abas
+        html.Div(id="linhas-content"),
+        
+        # Dados das linhas (oculto)
+        html.Div(id="linhas-data", style={'display': 'none'}, children=[
+            html.Script("""
+                window.linhasSemUso = [
+                    { telefone: '21-96729-8530', uso: 0.0, sessoes: 0, usuario: 'SEM CONSUMO RELEVANTE' },
+                    { telefone: '21-96747-1151', uso: 0.0, sessoes: 0, usuario: 'SEM CONSUMO RELEVANTE' },
+                    { telefone: '21-96747-4750', uso: 0.0, sessoes: 0, usuario: 'ALEX DE MELO MACHADO' },
+                    { telefone: '21-96754-3199', uso: 0.0, sessoes: 0, usuario: 'HIAGO PEREIRA DAUDT' },
+                    { telefone: '21-97161-9941', uso: 0.0, sessoes: 0, usuario: 'SEM CONSUMO RELEVANTE' },
+                    { telefone: '21-97218-5152', uso: 0.0, sessoes: 0, usuario: 'SEM CONSUMO RELEVANTE' },
+                    { telefone: '21-97286-8541', uso: 0.0, sessoes: 0, usuario: 'SEM CONSUMO RELEVANTE' },
+                    { telefone: '21-97295-0716', uso: 0.0, sessoes: 0, usuario: 'SEM CONSUMO RELEVANTE' },
+                    { telefone: '21-97546-4883', uso: 0.0, sessoes: 0, usuario: 'SEM CONSUMO RELEVANTE' },
+                    { telefone: '21-99308-8451', uso: 0.0, sessoes: 0, usuario: 'SEM CONSUMO RELEVANTE' },
+                    { telefone: '21-99417-4039', uso: 0.0, sessoes: 0, usuario: 'SEM CONSUMO RELEVANTE' },
+                    { telefone: '21-99573-5910', uso: 0.0, sessoes: 0, usuario: 'SEM CONSUMO RELEVANTE' },
+                    { telefone: '21-99582-8720', uso: 0.0, sessoes: 0, usuario: 'SEM CONSUMO RELEVANTE' },
+                    { telefone: '21-99628-2229', uso: 0.0, sessoes: 0, usuario: 'SEM CONSUMO RELEVANTE' },
+                    { telefone: '21-99638-6268', uso: 0.0, sessoes: 0, usuario: 'SEM CONSUMO RELEVANTE' },
+                    { telefone: '21-99642-6126', uso: 0.0, sessoes: 0, usuario: 'SEM CONSUMO RELEVANTE' },
+                    { telefone: '21-99720-0671', uso: 0.0, sessoes: 0, usuario: 'FRANCILEI ALVES PEREIRA' },
+                    { telefone: '21-99748-9522', uso: 0.0, sessoes: 0, usuario: 'DIOGO FERREIRA RODRIGUES' },
+                    { telefone: '21-99765-2489', uso: 0.0, sessoes: 0, usuario: 'SEM CONSUMO RELEVANTE' },
+                    { telefone: '21-99883-1246', uso: 0.0, sessoes: 0, usuario: 'MARCELO DELGADO LOPES' },
+                    { telefone: '21-99927-7527', uso: 0.0, sessoes: 0, usuario: 'CARLOS EDUARDO FERREIRA' },
+                    { telefone: '22-99221-6510', uso: 0.0, sessoes: 0, usuario: 'SEM CONSUMO RELEVANTE' },
+                    { telefone: '22-99256-3638', uso: 0.0, sessoes: 0, usuario: 'SEM CONSUMO RELEVANTE' }
+                ];
+            """)
+        ]),
+        
+        dcc.Interval(
+            id='interval-linhas',
+            interval=300*1000,
+            n_intervals=0
+        )
+    ])
+
 def create_reducao_custos_content():
     """Cria conteúdo da aba de Redução de Custos"""
     # Carrega dados de desligamento
@@ -1563,9 +1675,10 @@ app.layout = html.Div([
      Input('nav-colaboradores', 'n_clicks'),
      Input('nav-equipamentos', 'n_clicks'),
      Input('nav-reducao-custos', 'n_clicks'),
+     Input('nav-linhas-moveis', 'n_clicks'),
      Input('nav-config', 'n_clicks')]
 )
-def display_page(dash_clicks, colab_clicks, equip_clicks, reducao_clicks, config_clicks):
+def display_page(dash_clicks, colab_clicks, equip_clicks, reducao_clicks, linhas_clicks, config_clicks):
     ctx = dash.callback_context
     if not ctx.triggered:
         return create_dashboard_content()
@@ -1578,6 +1691,8 @@ def display_page(dash_clicks, colab_clicks, equip_clicks, reducao_clicks, config
         return create_equipamentos_content()
     elif button_id == 'nav-reducao-custos':
         return create_reducao_custos_content()
+    elif button_id == 'nav-linhas-moveis':
+        return create_linhas_moveis_content()
     elif button_id == 'nav-config':
         return create_config_content()
     else:
@@ -1588,17 +1703,19 @@ def display_page(dash_clicks, colab_clicks, equip_clicks, reducao_clicks, config
      Output('nav-colaboradores', 'className'),
      Output('nav-equipamentos', 'className'),
      Output('nav-reducao-custos', 'className'),
+     Output('nav-linhas-moveis', 'className'),
      Output('nav-config', 'className')],
     [Input('nav-dashboard', 'n_clicks'),
      Input('nav-colaboradores', 'n_clicks'),
      Input('nav-equipamentos', 'n_clicks'),
      Input('nav-reducao-custos', 'n_clicks'),
+     Input('nav-linhas-moveis', 'n_clicks'),
      Input('nav-config', 'n_clicks')]
 )
-def update_nav_classes(dash_clicks, colab_clicks, equip_clicks, reducao_clicks, config_clicks):
+def update_nav_classes(dash_clicks, colab_clicks, equip_clicks, reducao_clicks, linhas_clicks, config_clicks):
     ctx = dash.callback_context
     if not ctx.triggered:
-        return "nav-item active", "nav-item", "nav-item", "nav-item", "nav-item"
+        return "nav-item active", "nav-item", "nav-item", "nav-item", "nav-item", "nav-item"
     
     button_id = ctx.triggered[0]['prop_id'].split('.')[0]
     
@@ -1606,17 +1723,19 @@ def update_nav_classes(dash_clicks, colab_clicks, equip_clicks, reducao_clicks, 
     active_class = "nav-item active"
     
     if button_id == 'nav-dashboard':
-        return active_class, base_class, base_class, base_class, base_class
+        return active_class, base_class, base_class, base_class, base_class, base_class
     elif button_id == 'nav-colaboradores':
-        return base_class, active_class, base_class, base_class, base_class
+        return base_class, active_class, base_class, base_class, base_class, base_class
     elif button_id == 'nav-equipamentos':
-        return base_class, base_class, active_class, base_class, base_class
+        return base_class, base_class, active_class, base_class, base_class, base_class
     elif button_id == 'nav-reducao-custos':
-        return base_class, base_class, base_class, active_class, base_class
+        return base_class, base_class, base_class, active_class, base_class, base_class
+    elif button_id == 'nav-linhas-moveis':
+        return base_class, base_class, base_class, base_class, active_class, base_class
     elif button_id == 'nav-config':
-        return base_class, base_class, base_class, base_class, active_class
+        return base_class, base_class, base_class, base_class, base_class, active_class
     else:
-        return active_class, base_class, base_class, base_class, base_class
+        return active_class, base_class, base_class, base_class, base_class, base_class
 
 @app.callback(
     Output('current-time', 'children'),
@@ -1668,6 +1787,9 @@ def update_kpis(n, refresh_clicks):
     if (equipamentos_alocados or 0) + (total_estoque or 0) > 0:
         total_computadores_calc = equipamentos_alocados + total_estoque
         taxa_alocacao = round((equipamentos_alocados / total_computadores_calc) * 100, 1)
+    
+    df_equip_alugados = execute_query(QUERIES['kpi_equipamentos_alugados'])
+    equipamentos_alugados = df_equip_alugados.iloc[0]['total_equipamentos_alugados'] if not df_equip_alugados.empty else 0
     
     idade_path = os.path.join(os.path.dirname(__file__), 'idade_computadores.xlsx')
     media_idade_anos = None
@@ -1735,6 +1857,7 @@ def update_kpis(n, refresh_clicks):
     card_ativos_sem_pc = create_kpi_card("Ativos sem computador", colaboradores_ativos_sem_pc, "fas fa-user", "Colaboradores ativos")
     card_taxa_aloc = create_kpi_card("Taxa de alocação", f"{taxa_alocacao}%", "fas fa-chart-line", "Equip. alocados / total")
     card_media_idade = create_kpi_card("Média idade PCs", media_idade_anos if media_idade_anos is not None else '-', "fas fa-hourglass-half", "Anos")
+    card_equip_alugados = create_kpi_card("Equipamentos Alugados", equipamentos_alugados, "fas fa-handshake", "Computadores Samsung")
 
     df_aviso_detail = execute_query(QUERIES['colaboradores_aviso_previo'])
     aviso_children = []
@@ -1764,6 +1887,7 @@ def update_kpis(n, refresh_clicks):
         card_ativos_sem_pc,
         card_taxa_aloc,
         card_media_idade,
+        card_equip_alugados,
         
         popover_aviso
     ]
@@ -2434,12 +2558,12 @@ def update_colaboradores_detalhado_table(n, refresh_clicks):
                 'backgroundColor': '#f8f9fa'
             },
             {
-                'if': {'filter_query': '{StatusEquipamento} = "Sem Equipamento"'},
+                'if': {'filter_query': 'StatusEquipamento = "Sem Equipamento"'},
                 'backgroundColor': '#fff3cd',
                 'color': '#856404'
             },
             {
-                'if': {'filter_query': '{StatusEquipamento} = "Com Equipamento"'},
+                'if': {'filter_query': 'StatusEquipamento = "Com Equipamento"'},
                 'backgroundColor': '#d1edff',
                 'color': '#0c5460'
             },
@@ -2766,19 +2890,19 @@ def update_equipamentos_criticos_table(n, refresh_clicks):
                 'backgroundColor': '#f8f9fa'
             },
             {
-                'if': {'filter_query': '{Criticidade} = "Muito Crítico"'},
+                'if': {'filter_query': 'Criticidade = "Muito Crítico"'},
                 'backgroundColor': '#f8d7da',
                 'color': '#721c24',
                 'fontWeight': '600'
             },
             {
-                'if': {'filter_query': '{Criticidade} = "Crítico"'},
+                'if': {'filter_query': 'Criticidade = "Crítico"'},
                 'backgroundColor': '#ffeaa7',
                 'color': '#856404',
                 'fontWeight': '600'
             },
             {
-                'if': {'filter_query': '{Criticidade} = "Atenção"'},
+                'if': {'filter_query': 'Criticidade = "Atenção"'},
                 'backgroundColor': '#fff3cd',
                 'color': '#856404'
             },
@@ -2913,17 +3037,17 @@ def update_equipamentos_detalhado_table(n, refresh_clicks):
                 'backgroundColor': '#f8f9fa'
             },
             {
-                'if': {'filter_query': '{Status} = "Estoque"'},
+                'if': {'filter_query': 'Status = "Estoque"'},
                 'backgroundColor': '#cff4fc',
                 'color': '#055160'
             },
             {
-                'if': {'filter_query': '{Status} = "Alocado"'},
+                'if': {'filter_query': 'Status = "Alocado"'},
                 'backgroundColor': '#d1edff',
                 'color': '#0c5460'
             },
             {
-                'if': {'filter_query': '{Status} = "Descartado"'},
+                'if': {'filter_query': 'Status = "Descartado"'},
                 'backgroundColor': '#fff3cd',
                 'color': '#856404'
             },
@@ -3354,32 +3478,32 @@ def update_equipamentos_status_table(n, refresh_clicks):
                 'backgroundColor': '#f8f9fa'
             },
             {
-                'if': {'filter_query': '{StatusRealizado} = "Descartado"'},
+                'if': {'filter_query': 'StatusRealizado = "Descartado"'},
                 'backgroundColor': '#f8d7da',
                 'color': '#721c24'
             },
             {
-                'if': {'filter_query': '{StatusRealizado} = "Danificado"'},
+                'if': {'filter_query': 'StatusRealizado = "Danificado"'},
                 'backgroundColor': '#fff3cd',
                 'color': '#856404'
             },
             {
-                'if': {'filter_query': '{StatusRealizado} = "Extraviado"'},
+                'if': {'filter_query': 'StatusRealizado = "Extraviado"'},
                 'backgroundColor': '#fff3cd',
                 'color': '#856404'
             },
             {
-                'if': {'filter_query': '{StatusRealizado} = "Roubado"'},
+                'if': {'filter_query': 'StatusRealizado = "Roubado"'},
                 'backgroundColor': '#f8d7da',
                 'color': '#721c24'
             },
             {
-                'if': {'filter_query': '{StatusRealizado} = "Em Estoque"'},
+                'if': {'filter_query': 'StatusRealizado = "Em Estoque"'},
                 'backgroundColor': '#d1ecf1',
                 'color': '#0c5460'
             },
             {
-                'if': {'filter_query': '{StatusRealizado} = "Alocado"'},
+                'if': {'filter_query': 'StatusRealizado = "Alocado"'},
                 'backgroundColor': '#d4edda',
                 'color': '#155724'
             },
@@ -3582,7 +3706,7 @@ def update_reducao_data_table(refresh_clicks, n):
         },
         style_data_conditional=[
             {
-                'if': {'filter_query': '{Status} = Devolvido'},
+                'if': {'filter_query': 'Status = "Devolvido"'},
                 'backgroundColor': '#f9f9f9'
             }
         ],
@@ -3629,6 +3753,403 @@ def update_alerts_section(n, refresh_clicks):
         alerts.append(alert_card)
     
     return alerts
+
+# ==================== CALLBACKS LINHAS MÓVEIS ====================
+@app.callback(
+    Output('linhas-content', 'children'),
+    Input('linhas-tabs', 'value')
+)
+def render_linhas_content(active_tab):
+    """Renderiza o conteúdo das abas de Linhas Móveis"""
+    
+    if active_tab == 'sem-uso':
+        return create_linhas_sem_uso_content()
+    elif active_tab == 'com-uso':
+        return create_linhas_com_uso_content()
+    elif active_tab == 'metricas':
+        return create_linhas_metricas_content()
+    else:
+        return create_linhas_sem_uso_content()
+
+def create_linhas_sem_uso_content():
+    """Cria conteúdo da aba de linhas sem uso"""
+    
+    # Dados das linhas sem uso
+    linhas_sem_uso = [
+        {'telefone': '21-96729-8530', 'uso': 0.0, 'sessoes': 0, 'usuario': 'SEM CONSUMO RELEVANTE'},
+        {'telefone': '21-96747-1151', 'uso': 0.0, 'sessoes': 0, 'usuario': 'SEM CONSUMO RELEVANTE'},
+        {'telefone': '21-96747-4750', 'uso': 0.0, 'sessoes': 0, 'usuario': 'ALEX DE MELO MACHADO'},
+        {'telefone': '21-96754-3199', 'uso': 0.0, 'sessoes': 0, 'usuario': 'HIAGO PEREIRA DAUDT'},
+        {'telefone': '21-97161-9941', 'uso': 0.0, 'sessoes': 0, 'usuario': 'SEM CONSUMO RELEVANTE'},
+        {'telefone': '21-97218-5152', 'uso': 0.0, 'sessoes': 0, 'usuario': 'SEM CONSUMO RELEVANTE'},
+        {'telefone': '21-97286-8541', 'uso': 0.0, 'sessoes': 0, 'usuario': 'SEM CONSUMO RELEVANTE'},
+        {'telefone': '21-97295-0716', 'uso': 0.0, 'sessoes': 0, 'usuario': 'SEM CONSUMO RELEVANTE'},
+        {'telefone': '21-97546-4883', 'uso': 0.0, 'sessoes': 0, 'usuario': 'SEM CONSUMO RELEVANTE'},
+        {'telefone': '21-99308-8451', 'uso': 0.0, 'sessoes': 0, 'usuario': 'SEM CONSUMO RELEVANTE'},
+        {'telefone': '21-99417-4039', 'uso': 0.0, 'sessoes': 0, 'usuario': 'SEM CONSUMO RELEVANTE'},
+        {'telefone': '21-99573-5910', 'uso': 0.0, 'sessoes': 0, 'usuario': 'SEM CONSUMO RELEVANTE'},
+        {'telefone': '21-99582-8720', 'uso': 0.0, 'sessoes': 0, 'usuario': 'SEM CONSUMO RELEVANTE'},
+        {'telefone': '21-99628-2229', 'uso': 0.0, 'sessoes': 0, 'usuario': 'SEM CONSUMO RELEVANTE'},
+        {'telefone': '21-99638-6268', 'uso': 0.0, 'sessoes': 0, 'usuario': 'SEM CONSUMO RELEVANTE'},
+        {'telefone': '21-99642-6126', 'uso': 0.0, 'sessoes': 0, 'usuario': 'SEM CONSUMO RELEVANTE'},
+        {'telefone': '21-99720-0671', 'uso': 0.0, 'sessoes': 0, 'usuario': 'FRANCILEI ALVES PEREIRA'},
+        {'telefone': '21-99748-9522', 'uso': 0.0, 'sessoes': 0, 'usuario': 'DIOGO FERREIRA RODRIGUES'},
+        {'telefone': '21-99765-2489', 'uso': 0.0, 'sessoes': 0, 'usuario': 'SEM CONSUMO RELEVANTE'},
+        {'telefone': '21-99883-1246', 'uso': 0.0, 'sessoes': 0, 'usuario': 'MARCELO DELGADO LOPES'},
+        {'telefone': '21-99927-7527', 'uso': 0.0, 'sessoes': 0, 'usuario': 'CARLOS EDUARDO FERREIRA'},
+        {'telefone': '22-99221-6510', 'uso': 0.0, 'sessoes': 0, 'usuario': 'SEM CONSUMO RELEVANTE'},
+        {'telefone': '22-99256-3638', 'uso': 0.0, 'sessoes': 0, 'usuario': 'SEM CONSUMO RELEVANTE'}
+    ]
+    
+    return html.Div([
+        # Cards de estatísticas
+        html.Div([
+            html.Div([
+                html.H3("23", style={'fontSize': '2.5rem', 'fontWeight': '200', 'color': '#2c3e50', 'margin': '0'}),
+                html.P("Linhas sem consumo relevante", style={'color': '#7f8c8d', 'margin': '10px 0 0 0'})
+            ], className="chart-card", style={'width': '30%', 'display': 'inline-block', 'marginRight': '5%', 'textAlign': 'center'}),
+            
+            html.Div([
+                html.H3("14.6%", style={'fontSize': '2.5rem', 'fontWeight': '200', 'color': '#2c3e50', 'margin': '0'}),
+                html.P("Do total", style={'color': '#7f8c8d', 'margin': '10px 0 0 0'})
+            ], className="chart-card", style={'width': '30%', 'display': 'inline-block', 'marginRight': '5%', 'textAlign': 'center'}),
+            
+            html.Div([
+                html.H3("157", style={'fontSize': '2.5rem', 'fontWeight': '200', 'color': '#2c3e50', 'margin': '0'}),
+                html.P("Total de linhas", style={'color': '#7f8c8d', 'margin': '10px 0 0 0'})
+            ], className="chart-card", style={'width': '30%', 'display': 'inline-block', 'textAlign': 'center'})
+        ], style={'marginBottom': '30px'}),
+        
+        # Tabela de linhas
+        html.Div([
+            html.H4("Todas as 23 linhas sem consumo relevante", 
+                   style={'background': '#f8f9fa', 'padding': '20px', 'margin': '0', 'borderBottom': '1px solid #e0e0e0'}),
+            
+            dash_table.DataTable(
+                data=[{
+                    'Telefone': linha['telefone'],
+                    'Usuário': linha['usuario'],
+                    'Uso (GB)': f"{linha['uso']:.1f}",
+                    'Sessões': linha['sessoes'],
+                    'Status': 'Sem consumo relevante'
+                } for linha in linhas_sem_uso],
+                columns=[
+                    {'name': 'Telefone', 'id': 'Telefone'},
+                    {'name': 'Usuário', 'id': 'Usuário'},
+                    {'name': 'Uso (GB)', 'id': 'Uso (GB)'},
+                    {'name': 'Sessões', 'id': 'Sessões'},
+                    {'name': 'Status', 'id': 'Status'}
+                ],
+                style_cell={
+                    'textAlign': 'left',
+                    'fontFamily': 'Inter, sans-serif',
+                    'fontSize': '14px',
+                    'padding': '12px'
+                },
+                style_header={
+                    'backgroundColor': '#f8f9fa',
+                    'fontWeight': '600',
+                    'borderBottom': '2px solid #dee2e6'
+                },
+                style_data_conditional=[
+                    {
+                        'if': {'column_id': 'Status'},
+                        'backgroundColor': '#f8f9fa',
+                        'color': '#dc3545',
+                        'fontWeight': '500'
+                    }
+                ],
+                page_size=15,
+                style_table={'height': '600px', 'overflowY': 'auto'}
+            )
+        ], className="chart-card")
+    ])
+
+def create_linhas_com_uso_content():
+    """Cria conteúdo da aba de linhas com uso"""
+    
+    # Dados completos das linhas com uso (todas as 134 linhas do HTML)
+    linhas_com_uso = [
+        {'telefone': '21-96726-8788', 'uso': 385.9, 'sessoes': 463, 'status': 'Alto uso', 'usuario': 'ESTOQUE'},
+        {'telefone': '21-99528-6151', 'uso': 369.4, 'sessoes': 1655, 'status': 'Alto uso', 'usuario': 'DANIEL CARVALHO'},
+        {'telefone': '21-99706-5399', 'uso': 255.1, 'sessoes': 1206, 'status': 'Alto uso', 'usuario': 'PAULO CEZAR DIAS'},
+        {'telefone': '21-96716-7784', 'uso': 247.4, 'sessoes': 1598, 'status': 'Alto uso', 'usuario': 'BRUNA ROQUE'},
+        {'telefone': '21-99973-8542', 'uso': 236.4, 'sessoes': 1287, 'status': 'Alto uso', 'usuario': 'SIMONE DUARTE'},
+        {'telefone': '21-97223-6333', 'uso': 226.3, 'sessoes': 3155, 'status': 'Alto uso', 'usuario': 'DERICK JORDAN'},
+        {'telefone': '21-96717-5841', 'uso': 204.9, 'sessoes': 1305, 'status': 'Alto uso', 'usuario': 'HENRIQUE PAIVA'},
+        {'telefone': '22-99619-2915', 'uso': 203.9, 'sessoes': 1334, 'status': 'Alto uso', 'usuario': 'ANTONIO BARCELOS'},
+        {'telefone': '21-99515-3760', 'uso': 187.2, 'sessoes': 1850, 'status': 'Alto uso', 'usuario': 'ESTOQUE'},
+        {'telefone': '22-99763-2112', 'uso': 179.0, 'sessoes': 7304, 'status': 'Alto uso', 'usuario': 'ALEXANDRE MENEZES'},
+        {'telefone': '21-96738-3209', 'uso': 176.7, 'sessoes': 1481, 'status': 'Alto uso', 'usuario': 'THAINÁ ISRAEL'},
+        {'telefone': '21-97209-8873', 'uso': 176.5, 'sessoes': 981, 'status': 'Alto uso', 'usuario': 'ESTOQUE'},
+        {'telefone': '21-97288-8996', 'uso': 168.3, 'sessoes': 258, 'status': 'Alto uso', 'usuario': 'ESTOQUE'},
+        {'telefone': '21-97208-3724', 'uso': 166.1, 'sessoes': 2092, 'status': 'Alto uso', 'usuario': 'KLEBER LOPES'},
+        {'telefone': '21-99958-7136', 'uso': 165.7, 'sessoes': 1017, 'status': 'Alto uso', 'usuario': 'LUCAS RICHARD'},
+        {'telefone': '21-96724-2185', 'uso': 146.3, 'sessoes': 1131, 'status': 'Alto uso', 'usuario': 'ESTOQUE'},
+        {'telefone': '21-99750-5062', 'uso': 138.1, 'sessoes': 4008, 'status': 'Alto uso', 'usuario': 'ALAN SILVA'},
+        {'telefone': '21-99502-3196', 'uso': 124.9, 'sessoes': 1013, 'status': 'Alto uso', 'usuario': 'ESTOQUE'},
+        {'telefone': '21-96774-7649', 'uso': 113.0, 'sessoes': 1893, 'status': 'Alto uso', 'usuario': 'EDUARDO CHAMUSCA'},
+        {'telefone': '21-99855-3536', 'uso': 102.6, 'sessoes': 984, 'status': 'Alto uso', 'usuario': 'MAYARA TEIXEIRA'},
+        {'telefone': '21-99524-3953', 'uso': 99.4, 'sessoes': 958, 'status': 'Alto uso', 'usuario': 'LILIAN PEREIRA'},
+        {'telefone': '21-96754-3469', 'uso': 95.9, 'sessoes': 1203, 'status': 'Alto uso', 'usuario': 'LUCIENE NUNES'},
+        {'telefone': '21-96717-7121', 'uso': 94.2, 'sessoes': 3621, 'status': 'Alto uso', 'usuario': 'THOMAZ PARAVIDINO'},
+        {'telefone': '21-97214-7705', 'uso': 93.8, 'sessoes': 834, 'status': 'Alto uso', 'usuario': 'ESTOQUE'},
+        {'telefone': '21-97208-8322', 'uso': 93.6, 'sessoes': 3726, 'status': 'Alto uso', 'usuario': 'LEONARDO AQUINO'},
+        {'telefone': '21-97217-9427', 'uso': 83.6, 'sessoes': 708, 'status': 'Alto uso', 'usuario': 'ESTOQUE'},
+        {'telefone': '21-99634-1045', 'uso': 79.9, 'sessoes': 986, 'status': 'Alto uso', 'usuario': 'EDMAR SILVA'},
+        {'telefone': '22-99262-6851', 'uso': 77.8, 'sessoes': 5231, 'status': 'Alto uso', 'usuario': 'FABIO ALMEIDA'},
+        {'telefone': '22-99755-8345', 'uso': 76.7, 'sessoes': 1183, 'status': 'Alto uso', 'usuario': 'JONAS TISSIANI'},
+        {'telefone': '22-99800-9718', 'uso': 74.2, 'sessoes': 2655, 'status': 'Alto uso', 'usuario': 'DANIEL FERREIRA'},
+        {'telefone': '21-97294-8830', 'uso': 71.1, 'sessoes': 1385, 'status': 'Alto uso', 'usuario': 'PABLO MORELATO'},
+        {'telefone': '21-99924-8204', 'uso': 64.1, 'sessoes': 948, 'status': 'Alto uso', 'usuario': 'TATIANA TEIXEIRA'},
+        {'telefone': '21-99521-1683', 'uso': 63.8, 'sessoes': 439, 'status': 'Alto uso', 'usuario': 'FELIPE SANTOS'},
+        {'telefone': '22-99996-1936', 'uso': 62.8, 'sessoes': 1186, 'status': 'Alto uso', 'usuario': 'ESTOQUE'},
+        {'telefone': '22-99781-3189', 'uso': 62.4, 'sessoes': 835, 'status': 'Alto uso', 'usuario': 'PETTERSON PRADO'},
+        {'telefone': '21-99874-3007', 'uso': 61.3, 'sessoes': 968, 'status': 'Alto uso', 'usuario': 'HUGO MACHADO'},
+        {'telefone': '21-99579-8537', 'uso': 55.9, 'sessoes': 636, 'status': 'Alto uso', 'usuario': 'SERGIO RAMOS'},
+        {'telefone': '22-99725-3856', 'uso': 55.2, 'sessoes': 925, 'status': 'Alto uso', 'usuario': 'GUILHERME CHAGAS'},
+        {'telefone': '21-99208-9960', 'uso': 54.4, 'sessoes': 741, 'status': 'Alto uso', 'usuario': 'DANIEL OLIVEIRA'},
+        {'telefone': '21-99504-7033', 'uso': 50.3, 'sessoes': 2038, 'status': 'Alto uso', 'usuario': 'ESTOQUE'},
+        {'telefone': '21-99570-2548', 'uso': 50.2, 'sessoes': 1026, 'status': 'Alto uso', 'usuario': 'SIRLEI CRUZ'},
+        {'telefone': '21-97999-0034', 'uso': 46.8, 'sessoes': 636, 'status': 'Uso médio', 'usuario': 'JUSSANA MENEZES'},
+        {'telefone': '21-99681-5331', 'uso': 46.5, 'sessoes': 1122, 'status': 'Uso médio', 'usuario': 'RODRIGO BARRETO'},
+        {'telefone': '21-99797-6858', 'uso': 46.4, 'sessoes': 8465, 'status': 'Uso médio', 'usuario': 'JULIO GONÇALVES'},
+        {'telefone': '21-98230-6390', 'uso': 45.8, 'sessoes': 1162, 'status': 'Uso médio', 'usuario': 'MANUELA MOTA'},
+        {'telefone': '21-96779-7952', 'uso': 43.6, 'sessoes': 2020, 'status': 'Uso médio', 'usuario': 'ANA FERNANDES'},
+        {'telefone': '21-99732-0033', 'uso': 39.6, 'sessoes': 612, 'status': 'Uso médio', 'usuario': 'ESTOQUE'},
+        {'telefone': '21-96768-1635', 'uso': 39.4, 'sessoes': 1150, 'status': 'Uso médio', 'usuario': 'ESTOQUE'},
+        {'telefone': '21-99876-3306', 'uso': 39.3, 'sessoes': 583, 'status': 'Uso médio', 'usuario': 'ESTOQUE'},
+        {'telefone': '21-97269-2661', 'uso': 36.9, 'sessoes': 1270, 'status': 'Uso médio', 'usuario': 'ESTOQUE'},
+        {'telefone': '22-99242-2399', 'uso': 36.7, 'sessoes': 1583, 'status': 'Uso médio', 'usuario': 'ESTOQUE'},
+        {'telefone': '21-99566-4583', 'uso': 36.2, 'sessoes': 1174, 'status': 'Uso médio', 'usuario': 'ESTOQUE'},
+        {'telefone': '21-99864-5825', 'uso': 34.4, 'sessoes': 1796, 'status': 'Uso médio', 'usuario': 'JACY ARAUJO'},
+        {'telefone': '21-99743-1105', 'uso': 34.1, 'sessoes': 991, 'status': 'Uso médio', 'usuario': 'ANDERSON FRUTUOSO'},
+        {'telefone': '22-99892-8993', 'uso': 33.8, 'sessoes': 3769, 'status': 'Uso médio', 'usuario': 'YANCA ANDRADE'},
+        {'telefone': '21-97178-4590', 'uso': 32.3, 'sessoes': 626, 'status': 'Uso médio', 'usuario': 'PAULO MAFORT'},
+        {'telefone': '22-99888-3735', 'uso': 32.1, 'sessoes': 823, 'status': 'Uso médio', 'usuario': 'ESTOQUE'},
+        {'telefone': '21-99199-0035', 'uso': 32.1, 'sessoes': 1619, 'status': 'Uso médio', 'usuario': 'FARIS MIGUEL'},
+        {'telefone': '21-99832-4617', 'uso': 31.2, 'sessoes': 1174, 'status': 'Uso médio', 'usuario': 'LUCAS CARVALHO'},
+        {'telefone': '22-99795-6747', 'uso': 28.1, 'sessoes': 666, 'status': 'Uso médio', 'usuario': 'CASSIA MENDES'},
+        {'telefone': '21-96739-4845', 'uso': 24.9, 'sessoes': 1522, 'status': 'Uso médio', 'usuario': 'PATRICIA LUDGERO'},
+        {'telefone': '21-97564-4394', 'uso': 24.4, 'sessoes': 1293, 'status': 'Uso médio', 'usuario': 'REJANE ABREU'},
+        {'telefone': '22-99227-9302', 'uso': 24.1, 'sessoes': 646, 'status': 'Uso médio', 'usuario': 'FABIO TAVARES'},
+        {'telefone': '22-99994-5806', 'uso': 23.2, 'sessoes': 195, 'status': 'Uso médio', 'usuario': 'JESSICA PIMENTEL'},
+        {'telefone': '22-99221-9109', 'uso': 22.8, 'sessoes': 377, 'status': 'Uso médio', 'usuario': 'GABRIEL SALES'},
+        {'telefone': '21-99608-1270', 'uso': 22.8, 'sessoes': 1699, 'status': 'Uso médio', 'usuario': 'LUIS BECKMANN'},
+        {'telefone': '21-99920-9130', 'uso': 21.1, 'sessoes': 1073, 'status': 'Uso médio', 'usuario': 'ESTOQUE'},
+        {'telefone': '21-96734-8276', 'uso': 20.7, 'sessoes': 685, 'status': 'Uso médio', 'usuario': 'KAMILA NASCIMENTO'},
+        {'telefone': '22-99872-8513', 'uso': 20.4, 'sessoes': 2272, 'status': 'Uso médio', 'usuario': 'ESTOQUE'},
+        {'telefone': '21-99734-3746', 'uso': 20.0, 'sessoes': 884, 'status': 'Uso médio', 'usuario': 'HELIO OLIVEIRA'},
+        {'telefone': '21-96726-5906', 'uso': 20.0, 'sessoes': 1293, 'status': 'Uso médio', 'usuario': 'RAONY XAVIER'},
+        {'telefone': '21-99777-0805', 'uso': 18.0, 'sessoes': 1528, 'status': 'Uso médio', 'usuario': 'EMILLE SANTOS'},
+        {'telefone': '21-97165-4636', 'uso': 17.9, 'sessoes': 242, 'status': 'Uso médio', 'usuario': 'GILDA MOLL'},
+        {'telefone': '22-99262-5913', 'uso': 16.5, 'sessoes': 896, 'status': 'Uso médio', 'usuario': 'JAILSON SILVA'},
+        {'telefone': '21-99694-5085', 'uso': 16.5, 'sessoes': 723, 'status': 'Uso médio', 'usuario': 'ANNA FERREIRA'},
+        {'telefone': '22-99866-1702', 'uso': 16.5, 'sessoes': 846, 'status': 'Uso médio', 'usuario': 'PATRICIA LUSTOSA DIAS'},
+        {'telefone': '22-99256-4392', 'uso': 15.0, 'sessoes': 570, 'status': 'Uso médio', 'usuario': 'VANGERGLEDSON ANDERSON'},
+        {'telefone': '21-97223-9395', 'uso': 15.0, 'sessoes': 536, 'status': 'Uso médio', 'usuario': 'JOAO SILVA'},
+        {'telefone': '22-99819-6785', 'uso': 14.2, 'sessoes': 582, 'status': 'Uso médio', 'usuario': 'ANA DUARTE'},
+        {'telefone': '21-99597-7318', 'uso': 13.6, 'sessoes': 719, 'status': 'Uso médio', 'usuario': 'DRIELY CARVALHO'},
+        {'telefone': '22-99267-9686', 'uso': 13.1, 'sessoes': 366, 'status': 'Uso médio', 'usuario': 'ESTOQUE'},
+        {'telefone': '21-99846-9613', 'uso': 12.4, 'sessoes': 975, 'status': 'Uso médio', 'usuario': 'MARCIO SOSKA'},
+        {'telefone': '21-97288-2275', 'uso': 12.2, 'sessoes': 742, 'status': 'Uso médio', 'usuario': 'ROSELENE OLIVEIRA'},
+        {'telefone': '21-99710-5501', 'uso': 11.6, 'sessoes': 1065, 'status': 'Uso médio', 'usuario': 'WANDERSON JUNIOR'},
+        {'telefone': '21-96728-0058', 'uso': 11.1, 'sessoes': 346, 'status': 'Uso médio', 'usuario': 'JAIR TAVARES'},
+        {'telefone': '21-99934-9235', 'uso': 10.6, 'sessoes': 190, 'status': 'Uso médio', 'usuario': 'NIVEA ABREU'},
+        {'telefone': '21-97471-8744', 'uso': 10.4, 'sessoes': 849, 'status': 'Uso médio', 'usuario': 'DANIELLY ARAUJO'},
+        {'telefone': '21-96749-5305', 'uso': 10.4, 'sessoes': 519, 'status': 'Uso médio', 'usuario': 'ESTOQUE'},
+        {'telefone': '22-99877-9352', 'uso': 10.1, 'sessoes': 474, 'status': 'Uso médio', 'usuario': 'RODRIGO RODRIGUES'},
+        {'telefone': '21-99931-6723', 'uso': 9.1, 'sessoes': 1990, 'status': 'Baixo uso', 'usuario': 'JOSE ESTEVAO'},
+        {'telefone': '21-99879-9914', 'uso': 8.5, 'sessoes': 1009, 'status': 'Baixo uso', 'usuario': 'JEAN SANTOS'},
+        {'telefone': '21-96746-6127', 'uso': 8.1, 'sessoes': 1093, 'status': 'Baixo uso', 'usuario': 'RODRIGO MACEDO'},
+        {'telefone': '21-96754-7661', 'uso': 7.4, 'sessoes': 957, 'status': 'Baixo uso', 'usuario': 'ESTOQUE'},
+        {'telefone': '21-97159-8110', 'uso': 6.9, 'sessoes': 454, 'status': 'Baixo uso', 'usuario': 'MARIANA LIMA'},
+        {'telefone': '21-99753-4031', 'uso': 6.6, 'sessoes': 1298, 'status': 'Baixo uso', 'usuario': 'SILVIA CARNEIRO'},
+        {'telefone': '21-97230-8943', 'uso': 6.4, 'sessoes': 499, 'status': 'Baixo uso', 'usuario': 'ANDRE FREITAS'},
+        {'telefone': '21-99422-4402', 'uso': 6.2, 'sessoes': 935, 'status': 'Baixo uso', 'usuario': 'ESTOQUE'},
+        {'telefone': '21-97263-4285', 'uso': 4.3, 'sessoes': 212, 'status': 'Baixo uso', 'usuario': 'WALTER LOPES'},
+        {'telefone': '21-99760-7989', 'uso': 4.3, 'sessoes': 451, 'status': 'Baixo uso', 'usuario': 'JOELSON CARVALHO'},
+        {'telefone': '22-99215-5594', 'uso': 3.9, 'sessoes': 893, 'status': 'Baixo uso', 'usuario': 'BRENNO MARINI'},
+        {'telefone': '21-97299-7210', 'uso': 3.8, 'sessoes': 599, 'status': 'Baixo uso', 'usuario': 'SORYANE CORDEIRO'},
+        {'telefone': '22-99790-1463', 'uso': 3.7, 'sessoes': 186, 'status': 'Baixo uso', 'usuario': 'BRENNO MARINI'},
+        {'telefone': '21-97999-0028', 'uso': 3.6, 'sessoes': 217, 'status': 'Baixo uso', 'usuario': 'MARIANA LIMA'},
+        {'telefone': '21-99631-5374', 'uso': 3.5, 'sessoes': 63, 'status': 'Baixo uso', 'usuario': 'PAULO RIBAS'},
+        {'telefone': '21-99576-0184', 'uso': 3.3, 'sessoes': 615, 'status': 'Baixo uso', 'usuario': 'FRANCISCO ALVES'},
+        {'telefone': '21-97233-2159', 'uso': 3.3, 'sessoes': 339, 'status': 'Baixo uso', 'usuario': 'ESTOQUE'},
+        {'telefone': '21-96764-5262', 'uso': 3.1, 'sessoes': 2046, 'status': 'Baixo uso', 'usuario': 'LUCIANE HOLANDA'},
+        {'telefone': '21-99657-6916', 'uso': 3.1, 'sessoes': 2139, 'status': 'Baixo uso', 'usuario': 'BRUNO AGUIAR'},
+        {'telefone': '21-99842-7494', 'uso': 3.0, 'sessoes': 731, 'status': 'Baixo uso', 'usuario': 'VITOR CARVALHO'},
+        {'telefone': '22-99808-2623', 'uso': 2.8, 'sessoes': 88, 'status': 'Baixo uso', 'usuario': 'PHILIPE NALI'},
+        {'telefone': '21-99937-9912', 'uso': 2.7, 'sessoes': 404, 'status': 'Baixo uso', 'usuario': 'ESTOQUE'},
+        {'telefone': '22-99622-0196', 'uso': 2.6, 'sessoes': 417, 'status': 'Baixo uso', 'usuario': 'AYLA DIAS'},
+        {'telefone': '22-99244-4881', 'uso': 2.2, 'sessoes': 29, 'status': 'Baixo uso', 'usuario': 'ANDERSON BARBOSA'},
+        {'telefone': '22-99242-2380', 'uso': 2.2, 'sessoes': 857, 'status': 'Baixo uso', 'usuario': 'JOANNA AREAL'},
+        {'telefone': '22-99214-8916', 'uso': 2.1, 'sessoes': 323, 'status': 'Baixo uso', 'usuario': 'RAFAELLA MACHADO'},
+        {'telefone': '21-97113-2148', 'uso': 1.8, 'sessoes': 513, 'status': 'Baixo uso', 'usuario': 'GABRIELA CORREA'},
+        {'telefone': '21-99657-9133', 'uso': 1.7, 'sessoes': 1303, 'status': 'Baixo uso', 'usuario': 'ANA MATTZA'},
+        {'telefone': '21-99734-2485', 'uso': 1.6, 'sessoes': 348, 'status': 'Baixo uso', 'usuario': 'LEONARDO BORGES'},
+        {'telefone': '22-99852-6544', 'uso': 1.4, 'sessoes': 518, 'status': 'Baixo uso', 'usuario': 'RAFAEL SÁ'},
+        {'telefone': '21-99507-5745', 'uso': 1.4, 'sessoes': 580, 'status': 'Baixo uso', 'usuario': 'LUCIANA PIRES'},
+        {'telefone': '21-97634-8422', 'uso': 1.2, 'sessoes': 40, 'status': 'Baixo uso', 'usuario': 'ESTOQUE'},
+        {'telefone': '21-97111-3061', 'uso': 1.2, 'sessoes': 237, 'status': 'Baixo uso', 'usuario': 'ESTOQUE'},
+        {'telefone': '21-99668-2956', 'uso': 1.1, 'sessoes': 115, 'status': 'Baixo uso', 'usuario': 'RAFAEL PARRILHA'},
+        {'telefone': '21-99640-1089', 'uso': 0.9, 'sessoes': 223, 'status': 'Baixo uso', 'usuario': 'PATRICIA BENTO'},
+        {'telefone': '21-99192-7921', 'uso': 0.9, 'sessoes': 1116, 'status': 'Baixo uso', 'usuario': 'TATIANA REIS'},
+        {'telefone': '21-99681-2367', 'uso': 0.8, 'sessoes': 242, 'status': 'Baixo uso', 'usuario': 'LIDIANE SILVA'},
+        {'telefone': '21-99262-3498', 'uso': 0.7, 'sessoes': 1656, 'status': 'Baixo uso', 'usuario': 'MARCO LOPES'},
+        {'telefone': '21-99615-3703', 'uso': 0.5, 'sessoes': 92, 'status': 'Baixo uso', 'usuario': 'ESTOQUE'},
+        {'telefone': '21-99626-1695', 'uso': 0.5, 'sessoes': 60, 'status': 'Baixo uso', 'usuario': 'ESTOQUE'},
+        {'telefone': '21-97210-4140', 'uso': 0.5, 'sessoes': 55, 'status': 'Baixo uso', 'usuario': 'ESTOQUE'},
+        {'telefone': '21-96727-4805', 'uso': 0.4, 'sessoes': 185, 'status': 'Baixo uso', 'usuario': 'SHEILA WILLIAMS'},
+        {'telefone': '21-99999-4554', 'uso': 0.2, 'sessoes': 157, 'status': 'Baixo uso', 'usuario': 'EVANDRO FALCAO'},
+        {'telefone': '21-97241-9862', 'uso': 0.0, 'sessoes': 200, 'status': 'Baixo uso', 'usuario': 'TIAGO CARNEIRO'},
+        {'telefone': '21-99563-2227', 'uso': 0.0, 'sessoes': 155, 'status': 'Baixo uso', 'usuario': 'ISABELA PODORA'}
+    ]
+    
+    return html.Div([
+        # Cards de estatísticas
+        html.Div([
+            html.Div([
+                html.H3("134", style={'fontSize': '2.5rem', 'fontWeight': '200', 'color': '#2c3e50', 'margin': '0'}),
+                html.P("Linhas ativas", style={'color': '#7f8c8d', 'margin': '10px 0 0 0'})
+            ], className="chart-card", style={'width': '30%', 'display': 'inline-block', 'marginRight': '5%', 'textAlign': 'center'}),
+            
+            html.Div([
+                html.H3("85.4%", style={'fontSize': '2.5rem', 'fontWeight': '200', 'color': '#2c3e50', 'margin': '0'}),
+                html.P("Do total", style={'color': '#7f8c8d', 'margin': '10px 0 0 0'})
+            ], className="chart-card", style={'width': '30%', 'display': 'inline-block', 'marginRight': '5%', 'textAlign': 'center'}),
+            
+            html.Div([
+                html.H3("127.1", style={'fontSize': '2.5rem', 'fontWeight': '200', 'color': '#2c3e50', 'margin': '0'}),
+                html.P("GB médio por linha", style={'color': '#7f8c8d', 'margin': '10px 0 0 0'})
+            ], className="chart-card", style={'width': '30%', 'display': 'inline-block', 'textAlign': 'center'})
+        ], style={'marginBottom': '30px'}),
+        
+        # Tabela de linhas (todas as 134 linhas)
+        html.Div([
+            html.H4("Todas as 134 linhas com uso ativo",
+                   style={'background': '#f8f9fa', 'padding': '20px', 'margin': '0', 'borderBottom': '1px solid #e0e0e0'}),
+            
+            dash_table.DataTable(
+                data=[{
+                    'Telefone': linha['telefone'],
+                    'Usuário': linha['usuario'],
+                    'Uso (GB)': f"{linha['uso']:.1f}",
+                    'Sessões': linha['sessoes'],
+                    'Status': linha['status']
+                } for linha in linhas_com_uso],
+                columns=[
+                    {'name': 'Telefone', 'id': 'Telefone'},
+                    {'name': 'Usuário', 'id': 'Usuário'},
+                    {'name': 'Uso (GB)', 'id': 'Uso (GB)'},
+                    {'name': 'Sessões', 'id': 'Sessões'},
+                    {'name': 'Status', 'id': 'Status'}
+                ],
+                style_cell={
+                    'textAlign': 'left',
+                    'fontFamily': 'Inter, sans-serif',
+                    'fontSize': '14px',
+                    'padding': '12px'
+                },
+                style_header={
+                    'backgroundColor': '#f8f9fa',
+                    'fontWeight': '600',
+                    'borderBottom': '2px solid #dee2e6'
+                },
+                style_data_conditional=[
+                    {
+                        'if': {'column_id': 'Status', 'filter_query': 'Status = "Alto uso"'},
+                        'backgroundColor': '#d4edda',
+                        'color': '#155724',
+                        'fontWeight': '500'
+                    },
+                    {
+                        'if': {'column_id': 'Status', 'filter_query': 'Status = "Uso médio"'},
+                        'backgroundColor': '#d1ecf1',
+                        'color': '#0c5460',
+                        'fontWeight': '500'
+                    },
+                    {
+                        'if': {'column_id': 'Status', 'filter_query': 'Status = "Baixo uso"'},
+                        'backgroundColor': '#fff3cd',
+                        'color': '#856404',
+                        'fontWeight': '500'
+                    }
+                ],
+                page_size=20,
+                style_table={'height': '700px', 'overflowY': 'auto'},
+                filter_action="native",
+                sort_action="native"
+            )
+        ], className="chart-card")
+    ])
+
+def create_linhas_metricas_content():
+    """Cria conteúdo da aba de métricas"""
+    
+    return html.Div([
+        # Cards de métricas principais
+        html.Div([
+            html.Div([
+                html.H3("17.0", style={'fontSize': '2.5rem', 'fontWeight': '200', 'color': '#2c3e50', 'margin': '0'}),
+                html.P("TB nos 6 meses", style={'color': '#7f8c8d', 'margin': '10px 0 0 0'}),
+                html.H5("Consumo Total", style={'color': '#2c3e50', 'margin': '15px 0 0 0'})
+            ], className="chart-card", style={'width': '23%', 'display': 'inline-block', 'marginRight': '2%', 'textAlign': 'center'}),
+            
+            html.Div([
+                html.H3("385.9", style={'fontSize': '2.5rem', 'fontWeight': '200', 'color': '#2c3e50', 'margin': '0'}),
+                html.P("GB em uma linha", style={'color': '#7f8c8d', 'margin': '10px 0 0 0'}),
+                html.H5("Maior Consumidor", style={'color': '#2c3e50', 'margin': '15px 0 0 0'})
+            ], className="chart-card", style={'width': '23%', 'display': 'inline-block', 'marginRight': '2%', 'textAlign': 'center'}),
+            
+            html.Div([
+                html.H3("134", style={'fontSize': '2.5rem', 'fontWeight': '200', 'color': '#2c3e50', 'margin': '0'}),
+                html.P("de 157 totais", style={'color': '#7f8c8d', 'margin': '10px 0 0 0'}),
+                html.H5("Linhas Ativas", style={'color': '#2c3e50', 'margin': '15px 0 0 0'})
+            ], className="chart-card", style={'width': '23%', 'display': 'inline-block', 'marginRight': '2%', 'textAlign': 'center'}),
+            
+            html.Div([
+                html.H3("23", style={'fontSize': '2.5rem', 'fontWeight': '200', 'color': '#2c3e50', 'margin': '0'}),
+                html.P("linhas canceláveis", style={'color': '#7f8c8d', 'margin': '10px 0 0 0'}),
+                html.H5("Economia Potencial", style={'color': '#2c3e50', 'margin': '15px 0 0 0'})
+            ], className="chart-card", style={'width': '23%', 'display': 'inline-block', 'textAlign': 'center'})
+        ], style={'marginBottom': '30px'}),
+        
+        # Gráficos
+        html.Div([
+            html.Div([
+                html.H4("Distribuição de Uso por Categoria", style={'textAlign': 'center', 'marginBottom': '20px'}),
+                dcc.Graph(
+                    figure=px.pie(
+                        values=[23, 42, 51, 41],
+                        names=['Sem Consumo', 'Baixo Uso', 'Uso Médio', 'Alto Uso'],
+                        color_discrete_sequence=['#dc3545', '#ffc107', '#17a2b8', '#28a745']
+                    ).update_layout(
+                        font_family="Inter, sans-serif",
+                        showlegend=True,
+                        height=400
+                    )
+                )
+            ], className="chart-card", style={'width': '48%', 'display': 'inline-block', 'marginRight': '2%'}),
+            
+            html.Div([
+                html.H4("Consumo por Faixa de Uso", style={'textAlign': 'center', 'marginBottom': '20px'}),
+                dcc.Graph(
+                    figure=px.bar(
+                        x=['0 GB', '0-10 GB', '10-50 GB', '50+ GB'],
+                        y=[23, 23, 67, 44],
+                        color=['#6c757d', '#ffc107', '#17a2b8', '#28a745']
+                    ).update_layout(
+                        font_family="Inter, sans-serif",
+                        showlegend=False,
+                        height=400,
+                        xaxis_title="Faixas de Consumo",
+                        yaxis_title="Número de Linhas"
+                    )
+                )
+            ], className="chart-card", style={'width': '48%', 'display': 'inline-block', 'marginLeft': '2%'})
+        ])
+    ])
 
 if __name__ == '__main__':
     app.run(debug=False, host='0.0.0.0', port=8050)
